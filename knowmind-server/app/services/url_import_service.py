@@ -4,10 +4,12 @@ import html as html_lib
 import logging
 import re
 from html.parser import HTMLParser
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 import trafilatura
+
+from app.utils.outbound_security import validate_public_http_url
 
 log = logging.getLogger(__name__)
 
@@ -268,24 +270,47 @@ async def fetch_url_text(url: str, *, max_bytes: int = 2_000_000) -> tuple[str, 
     url = _normalize_url(url)
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(30.0),
-        follow_redirects=True,
+        follow_redirects=False,
         headers=_BROWSER_HEADERS,
     ) as client:
-        try:
-            r = await client.get(url)
-            r.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            code = e.response.status_code
-            if code == 403:
-                raise ValueError("目标网站拒绝访问（403），请换链接或手动复制正文") from e
-            if code == 404:
-                raise ValueError("网页不存在（404）") from e
-            raise ValueError(f"网页请求失败（HTTP {code}）") from e
-        except httpx.RequestError as e:
-            raise ValueError("无法访问该 URL，请检查网络或链接是否正确") from e
-        if len(r.content) > max_bytes:
-            raise ValueError("网页体积过大")
-        html = r.text
+        current = url
+        raw = b""
+        r: httpx.Response | None = None
+        for _ in range(6):
+            await validate_public_http_url(current)
+            try:
+                async with client.stream("GET", current) as response:
+                    r = response
+                    if response.status_code in (301, 302, 303, 307, 308):
+                        location = response.headers.get("location")
+                        if not location:
+                            raise ValueError("网页重定向缺少目标地址")
+                        current = urljoin(current, location)
+                        continue
+                    response.raise_for_status()
+                    chunks: list[bytes] = []
+                    total = 0
+                    async for chunk in response.aiter_bytes():
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise ValueError("网页体积过大")
+                        chunks.append(chunk)
+                    raw = b"".join(chunks)
+                    break
+            except httpx.HTTPStatusError as e:
+                code = e.response.status_code
+                if code == 403:
+                    raise ValueError("目标网站拒绝访问（403），请换链接或手动复制正文") from e
+                if code == 404:
+                    raise ValueError("网页不存在（404）") from e
+                raise ValueError(f"网页请求失败（HTTP {code}）") from e
+            except httpx.RequestError as e:
+                raise ValueError("无法访问该 URL，请检查网络或链接是否正确") from e
+        else:
+            raise ValueError("网页重定向次数过多")
+        if r is None:
+            raise ValueError("网页请求失败")
+        html = raw.decode(r.encoding or "utf-8", errors="replace")
     title = _extract_title(html)
     body = _extract_body_text(html, url)
     if not body:

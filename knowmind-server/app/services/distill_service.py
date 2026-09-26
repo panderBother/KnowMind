@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import logging
-import re
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 
@@ -10,7 +8,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models.orm import KnowledgeGap, RagRetrievalLog, UserFeedback, new_uuid
+from app.models.orm import (
+    ChatMessage,
+    Conversation,
+    KnowledgeBase,
+    KnowledgeGap,
+    RagRetrievalLog,
+    UserFeedback,
+    new_uuid,
+)
 from app.services.edgefn_client import complete_chat_turn, turn_visible_text
 from app.services.knowledge_category_service import ensure_default_category
 from app.services.knowledge_item_service import create_item
@@ -249,6 +255,48 @@ async def record_feedback(
     correction = correction.strip()
     if not correction:
         raise DistillError("纠错内容不能为空")
+    if kb_id:
+        kb = await session.get(KnowledgeBase, kb_id)
+        if kb is None or kb.user_id != user_id:
+            raise DistillError("知识库不存在或无权访问", 404)
+    if message_id:
+        found = await session.execute(
+            select(ChatMessage, Conversation)
+            .join(Conversation, Conversation.id == ChatMessage.conversation_id)
+            .where(ChatMessage.id == message_id, Conversation.user_id == user_id)
+        )
+        pair = found.first()
+        if pair is None:
+            raise DistillError("反馈消息不存在或无权访问", 404)
+        message, conversation = pair
+        if message.role != "assistant":
+            raise DistillError("只能对助手回答提交纠错", 400)
+        if conversation_id and conversation_id != conversation.id:
+            raise DistillError("反馈消息与会话不匹配", 400)
+        conversation_id = conversation.id
+        if message.reply_to_message_id:
+            prior_user = await session.get(ChatMessage, message.reply_to_message_id)
+            if (
+                prior_user is None
+                or prior_user.conversation_id != conversation.id
+                or prior_user.role != "user"
+            ):
+                raise DistillError("回答关联的用户消息无效", 400)
+            query_text = prior_user.content
+        elif not query_text:
+            # 兼容迁移前的历史回答；新回答必须使用 reply_to_message_id 精确关联。
+            prior = await session.execute(
+                select(ChatMessage)
+                .where(
+                    ChatMessage.conversation_id == conversation.id,
+                    ChatMessage.role == "user",
+                    ChatMessage.created_at <= message.created_at,
+                )
+                .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+                .limit(1)
+            )
+            prior_user = prior.scalar_one_or_none()
+            query_text = prior_user.content if prior_user is not None else None
     topic = normalize_topic_key(query_text or correction)
     row = UserFeedback(
         id=new_uuid(),

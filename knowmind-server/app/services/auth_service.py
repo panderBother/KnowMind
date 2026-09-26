@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import (
     create_access_token,
     create_refresh_token,
-    decode_refresh_token,
+    decode_refresh_claims,
     hash_password,
     verify_password,
 )
@@ -31,8 +31,8 @@ async def register_user(session: AsyncSession, email: str, password: str) -> tup
     await session.commit()
     await session.refresh(user)
 
-    token, expires_in = create_access_token(user.id)
-    refresh, refresh_exp = create_refresh_token(user.id)
+    token, expires_in = create_access_token(user.id, token_version=user.token_version)
+    refresh, refresh_exp = create_refresh_token(user.id, token_version=user.token_version)
     return UserPublic.model_validate(user), TokenResponse(
         access_token=token,
         refresh_token=refresh,
@@ -50,8 +50,8 @@ async def login_user(session: AsyncSession, email: str, password: str) -> tuple[
     if not user.is_active:
         raise AuthError("USER_DISABLED", "账号未激活或已禁用", 403)
 
-    token, expires_in = create_access_token(user.id)
-    refresh, refresh_exp = create_refresh_token(user.id)
+    token, expires_in = create_access_token(user.id, token_version=user.token_version)
+    refresh, refresh_exp = create_refresh_token(user.id, token_version=user.token_version)
     return UserPublic.model_validate(user), TokenResponse(
         access_token=token,
         refresh_token=refresh,
@@ -65,14 +65,17 @@ async def get_user_by_id(session: AsyncSession, user_id: str) -> User | None:
 
 
 async def refresh_tokens(session: AsyncSession, refresh_token: str) -> TokenResponse:
-    user_id = decode_refresh_token(refresh_token)
-    if not user_id:
+    claims = decode_refresh_claims(refresh_token)
+    if not claims:
         raise AuthError("INVALID_REFRESH", "刷新令牌无效或已过期", 401)
+    user_id = str(claims["sub"])
     user = await get_user_by_id(session, user_id)
     if user is None or not user.is_active:
         raise AuthError("USER_DISABLED", "账号不可用", 403)
-    access, expires_in = create_access_token(user.id)
-    refresh, refresh_exp = create_refresh_token(user.id)
+    if int(claims.get("ver", 0)) != int(user.token_version or 0):
+        raise AuthError("TOKEN_REVOKED", "刷新令牌已撤销，请重新登录", 401)
+    access, expires_in = create_access_token(user.id, token_version=user.token_version)
+    refresh, refresh_exp = create_refresh_token(user.id, token_version=user.token_version)
     return TokenResponse(
         access_token=access,
         refresh_token=refresh,
@@ -94,4 +97,13 @@ async def change_password(
     if not verify_password(current_password, user.password_hash):
         raise AuthError("INVALID_PASSWORD", "当前密码错误", 400)
     user.password_hash = hash_password(new_password)
+    user.token_version = int(user.token_version or 0) + 1
+    await session.commit()
+
+
+async def revoke_all_tokens(session: AsyncSession, user_id: str) -> None:
+    user = await get_user_by_id(session, user_id)
+    if user is None:
+        raise AuthError("NOT_FOUND", "用户不存在", 404)
+    user.token_version = int(user.token_version or 0) + 1
     await session.commit()

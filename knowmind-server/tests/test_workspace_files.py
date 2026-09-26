@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 import pytest
@@ -9,11 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
+from app.core.config import settings
 
 
 @pytest.fixture
 async def async_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("FILE_WRITER_ALLOWED_ROOTS", str(tmp_path))
+    monkeypatch.setattr(settings, "user_workspace_root", str(tmp_path))
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
 
     @event.listens_for(engine.sync_engine, "connect")
@@ -49,11 +49,11 @@ async def test_workspace_write_read_flow(async_client: AsyncClient, tmp_path: Pa
     token = reg.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
-    target = tmp_path / "note.md"
+    target = "note.md"
     wr = await async_client.post(
         "/api/v1/workspace/files/write",
         headers=headers,
-        json={"path": str(target), "content": "# hello\n", "format": "auto"},
+        json={"path": target, "content": "# hello\n", "format": "auto"},
     )
     assert wr.status_code == 200
     assert wr.json()["status"] == "written"
@@ -62,7 +62,7 @@ async def test_workspace_write_read_flow(async_client: AsyncClient, tmp_path: Pa
     rd = await async_client.post(
         "/api/v1/workspace/files/read",
         headers=headers,
-        json={"path": str(target)},
+        json={"path": target},
     )
     assert rd.status_code == 200
     assert "# hello" in rd.json()["content"]
@@ -70,3 +70,23 @@ async def test_workspace_write_read_flow(async_client: AsyncClient, tmp_path: Pa
     roots = await async_client.get("/api/v1/workspace/files/roots", headers=headers)
     assert roots.status_code == 200
     assert any(str(tmp_path) in r for r in roots.json()["allowed_roots"])
+
+    escaped = await async_client.post(
+        "/api/v1/workspace/files/write",
+        headers=headers,
+        json={"path": "../escape.md", "content": "blocked", "format": "auto"},
+    )
+    assert escaped.status_code == 400
+
+    other_reg = await async_client.post(
+        "/api/v1/auth/register",
+        json={"email": "other-files@example.com", "password": "secret123"},
+    )
+    assert other_reg.status_code == 200
+    other_headers = {"Authorization": f"Bearer {other_reg.json()['access_token']}"}
+    other_read = await async_client.post(
+        "/api/v1/workspace/files/read",
+        headers=other_headers,
+        json={"path": target},
+    )
+    assert other_read.status_code == 400

@@ -32,6 +32,9 @@ class ChatMessageOut(BaseModel):
     role: str
     content: str
     trace_id: str | None
+    citations: list[dict] | None = Field(default=None, validation_alias="citations_json")
+    attachments: list[dict] | None = Field(default=None, validation_alias="attachments_json")
+    tool_traces: list[dict] | None = Field(default=None, validation_alias="tool_traces_json")
     created_at: datetime
 
     model_config = {"from_attributes": True}

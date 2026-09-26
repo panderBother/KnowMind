@@ -227,6 +227,9 @@ pnpm dev       # 默认 http://localhost:5173
 | `EMBEDDING_MODE` | `bge` \| `http` \| `hash` |
 | `ARXIV_ENABLED` / `SEMANTIC_SCHOLAR_ENABLED` | 学术检索 MCP |
 | `CHAT_ATTACHMENT_ROOT` | 对话附件临时目录 |
+| `USER_WORKSPACE_ROOT` | 每位用户独立的文件工具沙箱根目录 |
+| `EXTERNAL_MCP_STDIO_ENABLED` | 是否允许 command/stdio MCP；公网部署应保持 `false` |
+| `*_RATE_LIMIT_PER_MINUTE` / `*_DAILY_QUOTA` | 鉴权、对话和上传限流/每日额度 |
 | `EVAL_REPORTS_DIR` | 评估报告 JSON 目录 |
 | `INGEST_BACKGROUND_THREAD` | `true` 时在本进程内异步解析 |
 | `REDIS_URL` / `CELERY_TASK_ALWAYS_EAGER` | Celery 任务队列 |

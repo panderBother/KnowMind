@@ -11,8 +11,11 @@ from app.ingest.registry import detect_file_type, parse_file
 from app.ingest.types import FileType
 from app.ingest.vlm import analyze_image_for_chat_async
 
-_MAX_BYTES = lambda: settings.chat_attachment_max_mb * 1024 * 1024
 _CONTEXT_LIMIT = 16000
+
+
+def _max_bytes() -> int:
+    return settings.chat_attachment_max_mb * 1024 * 1024
 
 
 def attachment_root() -> Path:
@@ -29,23 +32,56 @@ def user_dir(user_id: str) -> Path:
 
 
 async def save_attachment(user_id: str, filename: str, data: bytes) -> dict:
-    if len(data) > _MAX_BYTES():
+    if len(data) > _max_bytes():
         raise ValueError(f"附件过大（上限 {settings.chat_attachment_max_mb}MB）")
-    ft = detect_file_type(filename)
+    safe_filename = Path(filename).name
+    ft = detect_file_type(safe_filename)
     if ft == FileType.UNKNOWN:
         raise ValueError("不支持的附件格式")
     att_id = str(uuid.uuid4())
-    path = user_dir(user_id) / f"{att_id}_{Path(filename).name}"
+    path = user_dir(user_id) / f"{att_id}_{safe_filename}"
     path.write_bytes(data)
-    return {"id": att_id, "filename": filename, "file_type": ft.value, "size": len(data)}
+    return {"id": att_id, "filename": safe_filename, "file_type": ft.value, "size": len(data)}
 
 
 def _resolve_attachment_path(user_id: str, att_id: str) -> Path | None:
     att_id = (att_id or "").strip()
     if not att_id:
         return None
-    matches = list(user_dir(user_id).glob(f"{att_id}_*"))
+    try:
+        normalized_id = str(uuid.UUID(att_id))
+    except ValueError:
+        return None
+    matches = list(user_dir(user_id).glob(f"{normalized_id}_*"))
     return matches[0] if matches else None
+
+
+def resolve_attachment_for_user(user_id: str, att_id: str) -> tuple[Path, str]:
+    """解析当前用户的附件，绝不跨用户目录返回文件。"""
+    path = _resolve_attachment_path(user_id, att_id)
+    if path is None or not path.is_file():
+        raise ValueError("附件不存在")
+    filename = path.name.split("_", 1)[-1] if "_" in path.name else path.name
+    return path, filename
+
+
+def attachment_metadata(user_id: str, attachment_ids: list[str]) -> list[dict]:
+    """生成可随聊天消息持久化的安全附件元数据。"""
+    out: list[dict] = []
+    for att_id in attachment_ids:
+        path = _resolve_attachment_path(user_id, att_id)
+        if path is None:
+            continue
+        name = path.name.split("_", 1)[-1] if "_" in path.name else path.name
+        out.append(
+            {
+                "id": att_id,
+                "filename": name,
+                "file_type": detect_file_type(path.name).value,
+                "size": path.stat().st_size,
+            }
+        )
+    return out
 
 
 async def _parse_attachment_content(path: Path, file_type: FileType) -> str:

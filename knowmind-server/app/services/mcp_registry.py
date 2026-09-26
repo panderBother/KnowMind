@@ -7,8 +7,10 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from app.core.config import _SERVER_ROOT
+from app.core.config import settings
 from app.models.mcp_schemas import (
     BuiltinMcpToolDto,
     CustomMcpToolDto,
@@ -17,6 +19,7 @@ from app.models.mcp_schemas import (
     McpToolsResponse,
     UpdateCustomMcpRequest,
 )
+from app.utils.outbound_security import validate_public_http_url_syntax
 
 _REGISTRY_DIR = _SERVER_ROOT / "data" / "mcp" / "users"
 
@@ -161,6 +164,12 @@ def _validate_server_config(config: McpServerConfig) -> None:
     command = (config.command or "").strip()
     if not url and not command:
         raise ValueError("须填写 url 或 command 至少一项")
+    if command and not settings.external_mcp_stdio_enabled:
+        raise ValueError("服务端已禁用 command/stdio MCP，仅允许公网 HTTPS URL")
+    if url:
+        validate_public_http_url_syntax(url)
+        if urlparse(url).scheme.lower() != "https":
+            raise ValueError("外部 MCP 仅允许公网 HTTPS URL")
 
 
 def _custom_from_dict(raw: dict[str, Any]) -> CustomMcpToolDto:
@@ -210,6 +219,19 @@ def import_mcp_json(user_id: str, raw_json: str) -> ImportMcpResponse:
             skipped += 1
             skip_details.append(f"{name}: 缺少 url 或 command")
             continue
+        if command and not settings.external_mcp_stdio_enabled:
+            skipped += 1
+            skip_details.append(f"{name}: 服务端已禁用 command/stdio MCP")
+            continue
+        if url:
+            try:
+                validate_public_http_url_syntax(url)
+                if urlparse(url).scheme.lower() != "https":
+                    raise ValueError("外部 MCP 仅允许公网 HTTPS URL")
+            except ValueError as exc:
+                skipped += 1
+                skip_details.append(f"{name}: {exc}")
+                continue
         if name in existing_names:
             skipped += 1
             skip_details.append(f"{name}: 已存在，跳过重复导入")

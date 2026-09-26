@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_days: int = 7
 
+    # API 防滥用：Redis 可用时跨进程共享；不可用时退化为单进程计数。
+    auth_rate_limit_per_minute: int = 20
+    chat_rate_limit_per_minute: int = 20
+    chat_daily_quota: int = 200
+    upload_rate_limit_per_minute: int = 20
+    upload_daily_quota: int = 100
+    rate_limit_trust_proxy_headers: bool = False
+
     # 本地文件存储根目录（后续可换 OSS 适配器）
     storage_local_root: str = "data/storage"
 
@@ -140,6 +148,8 @@ class Settings(BaseSettings):
 
     # 对话中本地文件读写；白名单见 FILE_WRITER_ALLOWED_ROOTS
     file_tools_enabled: bool = True
+    # Web 文件工具只能访问此目录下按 user_id 隔离的子目录。
+    user_workspace_root: str = "data/user_workspaces"
     # prompt：模型输出 XML 工具块（兼容 EdgeFN / 未开 native tools 的网关）；native：OpenAI tools API
     file_tools_mode: str = Field(default="prompt", description="prompt | native")
     file_tools_max_rounds: int = 6
@@ -167,6 +177,8 @@ class Settings(BaseSettings):
     # 评估：启动时若 reports/latest.json 缺失则尝试生成 sample
     eval_auto_bootstrap: bool = True
     external_mcp_enabled: bool = True
+    # 公网服务禁止用户提供 command/cwd/env 启动本地 MCP 子进程。
+    external_mcp_stdio_enabled: bool = False
     # prompt：不传 EdgeFN tools（兼容未开 vLLM auto tool choice）；native：OpenAI tools API
     external_mcp_tool_mode: str = Field(default="prompt", description="prompt | native")
     external_mcp_max_rounds: int = 4
@@ -181,7 +193,13 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _resolve_relative_paths(self) -> Self:
         """相对路径一律相对 knowmind-server 根目录，避免从仓库根启动时与 Worker 不一致。"""
-        for name in ("storage_local_root", "chroma_data_path", "whoosh_index_root", "chat_attachment_root"):
+        for name in (
+            "storage_local_root",
+            "chroma_data_path",
+            "whoosh_index_root",
+            "chat_attachment_root",
+            "user_workspace_root",
+        ):
             raw = getattr(self, name)
             if not raw:
                 continue

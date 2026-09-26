@@ -71,8 +71,6 @@ async def test_register_login_me_kb_flow(async_client: AsyncClient) -> None:
         json={"name": "我的知识库"},
     )
     assert create.status_code == 201, create.text
-    kb_id = create.json()["id"]
-
     listed = await async_client.get(
         "/api/v1/knowledge-bases",
         headers={"Authorization": f"Bearer {token}"},
@@ -150,3 +148,25 @@ async def test_refresh_token_flow(async_client: AsyncClient) -> None:
     assert me.status_code == 200
     assert me.json()["email"] == "refresh@example.com"
     assert new_body.get("refresh_token")
+
+
+@pytest.mark.asyncio
+async def test_logout_revokes_access_and_refresh_tokens(async_client: AsyncClient) -> None:
+    reg = await async_client.post(
+        "/api/v1/auth/register",
+        json={"email": "logout@example.com", "password": "password123"},
+    )
+    assert reg.status_code == 200, reg.text
+    body = reg.json()
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+
+    logout = await async_client.post("/api/v1/auth/logout", headers=headers)
+    assert logout.status_code == 204, logout.text
+
+    old_access = await async_client.get("/api/v1/auth/me", headers=headers)
+    assert old_access.status_code == 401
+    old_refresh = await async_client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": body["refresh_token"]},
+    )
+    assert old_refresh.status_code == 401

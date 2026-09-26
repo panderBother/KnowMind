@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Download,
   ExternalLink,
   GripVertical,
   Loader2,
@@ -25,7 +26,11 @@ import { useUi } from "@/components/ui/UiProvider";
 import { getAccessToken } from "@/services/auth";
 import { ChatRagSources } from "@/components/ChatRagSources";
 import { streamChatMessage, type AgentStepEvent, type ChatToolResult, type RagSourceDto } from "@/services/chat";
-import { uploadChatAttachment, type ChatAttachmentDto } from "@/services/chatAttachments";
+import {
+  downloadChatAttachment,
+  uploadChatAttachment,
+  type ChatAttachmentDto,
+} from "@/services/chatAttachments";
 import {
   type ConversationDto,
   fetchConversation,
@@ -67,6 +72,7 @@ type FileToolLog = {
 
 type ChatMessage = {
   id: string;
+  serverMessageId?: string;
   role: "user" | "assistant";
   content: string;
   /** 用户消息内联图片（blob URL，仅当前会话展示） */
@@ -81,6 +87,7 @@ type ChatMessage = {
   streamStatus?: string;
   ragSources?: RagSourceDto[];
   ragKbId?: string;
+  attachments?: Array<{ id: string; filename: string; file_type: string; size: number }>;
 };
 
 function summarizeToolResult(payload: ChatToolResult): string {
@@ -183,7 +190,6 @@ export function ChatPage() {
   const [mobileSessionsOpen, setMobileSessionsOpen] = useState(false);
   /** 桌面左侧栏：会话与知识库分栏，避免混在同一滚动区 */
   const [leftRailTab, setLeftRailTab] = useState<LeftRailTab>("sessions");
-  const lastUserQueryRef = useRef("");
   const [extracting, setExtracting] = useState(false);
   const [generatingReport, setGeneratingReport] = useState(false);
 
@@ -272,10 +278,22 @@ export function ChatPage() {
       revokeMessageImages(prev);
       return msgs.map((m) => ({
         id: m.id,
+        serverMessageId: m.id,
         role: m.role === "assistant" ? "assistant" : "user",
         content: m.content,
         trace_id: m.trace_id ?? undefined,
         streamFinal: true,
+        ragSources: m.citations ?? undefined,
+        ragKbId: m.citations?.length ? conv.knowledge_base_id ?? undefined : undefined,
+        attachments: m.attachments ?? undefined,
+        fileToolLogs:
+          m.role === "assistant"
+            ? (m.tool_traces ?? []).map((trace) => ({
+                tool: trace.tool,
+                ok: trace.ok,
+                summary: summarizeToolResult({ tool: trace.tool, ok: trace.ok, result: trace.result }),
+              }))
+            : undefined,
         mediaItems: m.role === "assistant" ? extractMediaFromText(m.content) : undefined,
       }));
     });
@@ -338,7 +356,7 @@ export function ChatPage() {
     [applyConversationPayload, conversationId, loadConversationList, loading, switchingConv],
   );
 
-  const handleFeedback = async () => {
+  const handleFeedback = async (target: ChatMessage) => {
     const correction = await prompt({
       title: "纠错反馈",
       message: "请填写您认为更正确的答案或补充说明：",
@@ -347,11 +365,20 @@ export function ChatPage() {
       confirmText: "提交",
     });
     if (!correction?.trim()) return;
+    const targetIndex = messages.findIndex((row) => row.id === target.id);
+    let queryText = "";
+    for (let i = targetIndex - 1; i >= 0; i -= 1) {
+      if (messages[i]?.role === "user") {
+        queryText = messages[i].content;
+        break;
+      }
+    }
     try {
       await submitChatFeedback({
         knowledge_base_id: kbId || null,
         conversation_id: conversationId,
-        query_text: lastUserQueryRef.current || null,
+        message_id: target.serverMessageId ?? target.id,
+        query_text: queryText || null,
         correction: correction.trim(),
       });
       message.success("感谢反馈，已记录用于知识蒸馏分析。");
@@ -415,7 +442,6 @@ export function ChatPage() {
       .filter((a) => isImageAttachment(a) && a.previewUrl)
       .map((a) => a.previewUrl as string);
     setErr(null);
-    lastUserQueryRef.current = text;
     setInput("");
     setPendingAttachments([]);
     const userMsg: ChatMessage = {
@@ -423,6 +449,12 @@ export function ChatPage() {
       role: "user",
       content: trimmed,
       images: sentImages.length > 0 ? sentImages : undefined,
+      attachments: attachmentsToSend.map(({ id, filename, file_type, size }) => ({
+        id,
+        filename,
+        file_type,
+        size,
+      })),
     };
     const assistantId = randomId();
     const assistantPlaceholder: ChatMessage = {
@@ -458,6 +490,13 @@ export function ChatPage() {
           onConversationId: (cid) => {
             setConversationId(cid);
             setStoredConversationId(cid);
+          },
+          onMessageSaved: (messageId) => {
+            setMessages((rows) =>
+              rows.map((row) =>
+                row.id === assistantId ? { ...row, serverMessageId: messageId } : row,
+              ),
+            );
           },
           onAgentStep: (payload: AgentStepEvent) => {
             const detail = payload.detail?.trim();
@@ -1011,6 +1050,26 @@ export function ChatPage() {
                   ))}
                 </div>
               ) : null}
+              {m.attachments?.length ? (
+                <ul className="mb-2 space-y-1 text-xs text-white/85">
+                  {m.attachments.map((att) => (
+                    <li key={att.id}>
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 underline decoration-white/40 underline-offset-2 hover:decoration-white"
+                        onClick={() => {
+                          void downloadChatAttachment(att.id, att.filename).catch((error) =>
+                            message.error(error instanceof Error ? error.message : "附件下载失败"),
+                          );
+                        }}
+                      >
+                        <Download className="h-3 w-3" />
+                        {att.filename}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
               {m.content ? <p className="whitespace-pre-wrap break-words">{m.content}</p> : null}
             </div>
           ) : (
@@ -1105,7 +1164,7 @@ export function ChatPage() {
                 <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-2">
                   <button
                     type="button"
-                    onClick={() => void handleFeedback()}
+                    onClick={() => void handleFeedback(m)}
                     className="text-xs font-medium text-slate-500 hover:text-red-600"
                   >
                     不满意 / 纠错

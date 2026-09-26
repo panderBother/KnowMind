@@ -35,6 +35,9 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=True)
+    token_version: Mapped[int] = mapped_column(
+        Integer(), nullable=False, default=0, server_default="0"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -296,6 +299,12 @@ class ChatMessage(Base):
     content: Mapped[str] = mapped_column(Text(), nullable=False)
     trace_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     token_est: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    reply_to_message_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, index=True
+    )
+    citations_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    attachments_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    tool_traces_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

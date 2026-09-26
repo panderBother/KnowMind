@@ -27,7 +27,7 @@ CHAT_FILE_TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "文件绝对或相对路径，如 D:\\\\notes\\\\draft.md",
+                        "description": "用户文件沙箱内的相对路径，如 notes/draft.md",
                     },
                 },
                 "required": ["path"],
@@ -90,10 +90,11 @@ _PROMPT_TOOL_BLOCK = """
 用户要求读/写磁盘文件时，你必须在回复中包含以下格式（JSON 用花括号包裹，content 内换行用 \\n）：
 
 <knowmind_tool_call>
-{"name": "write_document", "arguments": {"path": "D:\\\\完整路径\\\\file.md", "content": "文件正文", "format": "markdown", "overwrite": true}}
+{"name": "write_document", "arguments": {"path": "notes/file.md", "content": "文件正文", "format": "markdown", "overwrite": true}}
 </knowmind_tool_call>
 
 可用 name：read_document、write_document、write_markdown、list_allowed_write_roots。
+所有路径都必须位于当前用户的文件沙箱内；优先使用相对路径，禁止尝试访问盘符、系统目录或其他用户目录。
 写完工具块后停止，等待系统执行；不要假装已经写入成功。
 若无需读写文件，正常回答且不要输出该块。
 """.strip()
@@ -109,6 +110,14 @@ _WIN_PATH_RE = re.compile(
 # E盘里的 xxx.md / E盘 xxx.txt
 _DISK_FILE_RE = re.compile(
     r"([A-Za-z])\s*盘\s*(?:里|的)?\s*([^\s,，。；;\"'<>|]+?\.(?:md|txt|markdown))",
+    re.IGNORECASE,
+)
+_QUOTED_PATH_RE = re.compile(
+    r"[`\"']([^`\"'\r\n]+?\.(?:md|txt|markdown))[`\"']",
+    re.IGNORECASE,
+)
+_REL_PATH_RE = re.compile(
+    r"(?<![\w:])(?:[\w\u4e00-\u9fff.-]+[\\/])*[\w\u4e00-\u9fff.-]+\.(?:md|txt|markdown)\b",
     re.IGNORECASE,
 )
 _READ_KW = ("读取", "读一下", "打开", "查看", "看看", "总结", "概括", "梳理", "提取", "里面", "内容")
@@ -272,7 +281,7 @@ def extract_path_from_texts(texts: list[str]) -> str | None:
 
 
 def expand_path_candidates(texts: list[str]) -> list[str]:
-    """从用户描述生成可能路径（含 E盘里的 file.md → E:\\file.md）。"""
+    """从用户描述生成候选路径；执行层会强制限制在当前用户沙箱。"""
     found: list[str] = []
     seen: set[str] = set()
 
@@ -288,11 +297,14 @@ def expand_path_candidates(texts: list[str]) -> list[str]:
         text = _normalize_path_text(raw)
         for m in _WIN_PATH_RE.finditer(text):
             add(m.group(0))
+        for m in _QUOTED_PATH_RE.finditer(text):
+            add(m.group(1))
+        for m in _REL_PATH_RE.finditer(text):
+            add(m.group(0))
         for m in _DISK_FILE_RE.finditer(raw):
             drive, name = m.group(1).upper(), m.group(2).strip()
             add(f"{drive}:\\{name}")
             # 常见：E盘 velochat 目录下的文件
-            stem = name
             if "\\" not in name and "/" not in name:
                 low = raw.lower()
                 if "velochat" in low or "vechat" in low:
@@ -358,14 +370,16 @@ def build_messages_for_file_task(
     ]
 
 
-def try_read_files_from_user_texts(user_texts: list[str]) -> tuple[list[ToolTraceEntry], str, str | None]:
+def try_read_files_from_user_texts(
+    user_texts: list[str], *, user_id: str = "local"
+) -> tuple[list[ToolTraceEntry], str, str | None]:
     """
     按候选路径依次读取，返回 (traces, 合并正文, 成功路径)。
     """
     traces: list[ToolTraceEntry] = []
     for _name, args in build_read_calls(user_texts):
         path = json.loads(args).get("path", "")
-        result, ok = _run_tool("read_document", args)
+        result, ok = _run_tool("read_document", args, user_id=user_id)
         entry = ToolTraceEntry(name="read_document", arguments=args, result=result, ok=ok)
         traces.append(entry)
         if ok and isinstance(result.get("content"), str):
@@ -478,15 +492,19 @@ def inject_prompt_tool_instructions(messages: list[dict[str, Any]]) -> list[dict
     return out
 
 
-def execute_tool_calls(calls: list[tuple[str, str]]) -> list[ToolTraceEntry]:
+def execute_tool_calls(
+    calls: list[tuple[str, str]], *, user_id: str = "local"
+) -> list[ToolTraceEntry]:
     entries: list[ToolTraceEntry] = []
     for name, args in calls:
-        result, ok = _run_tool(name, args)
+        result, ok = _run_tool(name, args, user_id=user_id)
         entries.append(ToolTraceEntry(name=name, arguments=args, result=result, ok=ok))
     return entries
 
 
-def try_direct_write_from_user_message(user_text: str) -> ToolTraceEntry | None:
+def try_direct_write_from_user_message(
+    user_text: str, *, user_id: str = "local"
+) -> ToolTraceEntry | None:
     """用户消息已含路径+正文时，不等待模型，直接写入。"""
     inferred = infer_write_from_user_message(user_text)
     if not inferred:
@@ -497,14 +515,17 @@ def try_direct_write_from_user_message(user_text: str) -> ToolTraceEntry | None:
         ensure_ascii=False,
     )
     log_info("[file_tools] 直接写入（用户消息）path=%s bytes=%s", path, len(content.encode("utf-8")))
-    result, ok = _run_tool("write_document", args)
+    result, ok = _run_tool("write_document", args, user_id=user_id)
     return ToolTraceEntry(name="write_document", arguments=args, result=result, ok=ok)
 
 
-def _run_tool(name: str, arguments: str) -> tuple[dict[str, Any], bool]:
+def _run_tool(
+    name: str, arguments: str, *, user_id: str = "local"
+) -> tuple[dict[str, Any], bool]:
     log.info("file_tools execute name=%s args=%s", name, arguments[:500])
     log_info("[file_tools] 执行工具 %s", name)
     raw = file_workspace.execute_tool(
+        user_id,
         name,
         arguments,
         max_read_bytes=file_workspace.max_read_bytes(),
@@ -530,10 +551,11 @@ async def _execute_calls(
     *,
     traces: list[ToolTraceEntry],
     on_tool: Callable[[ToolTraceEntry], Awaitable[None]] | None,
+    user_id: str,
 ) -> list[str]:
     result_lines: list[str] = []
     for name, args in calls:
-        result, ok = _run_tool(name, args)
+        result, ok = _run_tool(name, args, user_id=user_id)
         entry = ToolTraceEntry(name=name, arguments=args, result=result, ok=ok)
         traces.append(entry)
         if on_tool is not None:
@@ -546,6 +568,7 @@ async def _complete_native(
     messages: list[dict[str, Any]],
     *,
     on_tool: Callable[[ToolTraceEntry], Awaitable[None]] | None,
+    user_id: str,
 ) -> ChatWithToolsResult:
     working = list(messages)
     traces: list[ToolTraceEntry] = []
@@ -577,7 +600,7 @@ async def _complete_native(
             fn = tc.get("function") or {}
             name = str(fn.get("name") or "")
             args = str(fn.get("arguments") or "{}")
-            result, ok = _run_tool(name, args)
+            result, ok = _run_tool(name, args, user_id=user_id)
             entry = ToolTraceEntry(name=name, arguments=args, result=result, ok=ok)
             traces.append(entry)
             if on_tool is not None:
@@ -601,6 +624,7 @@ async def _complete_prompt(
     messages: list[dict[str, Any]],
     *,
     on_tool: Callable[[ToolTraceEntry], Awaitable[None]] | None,
+    user_id: str,
 ) -> ChatWithToolsResult:
     working = inject_prompt_tool_instructions(messages)
     traces: list[ToolTraceEntry] = []
@@ -649,7 +673,9 @@ async def _complete_prompt(
             )
 
         working.append({"role": "assistant", "content": combined})
-        result_lines = await _execute_calls(calls, traces=traces, on_tool=on_tool)
+        result_lines = await _execute_calls(
+            calls, traces=traces, on_tool=on_tool, user_id=user_id
+        )
         working.append(
             {
                 "role": "user",
@@ -669,6 +695,7 @@ async def complete_chat_with_file_tools(
     messages: list[dict[str, Any]],
     *,
     on_tool: Callable[[ToolTraceEntry], Awaitable[None]] | None = None,
+    user_id: str = "local",
 ) -> ChatWithToolsResult:
     """
     多轮调用模型直至不再请求工具或达到轮次上限。
@@ -678,11 +705,11 @@ async def complete_chat_with_file_tools(
     log_info("[file_tools] 开始 file_tools_mode=%s", settings.file_tools_mode)
     if _use_native_tools():
         try:
-            return await _complete_native(messages, on_tool=on_tool)
+            return await _complete_native(messages, on_tool=on_tool, user_id=user_id)
         except RuntimeError as e:
             msg = str(e).lower()
             if "tool" in msg and ("choice" in msg or "400" in msg):
                 log.warning("file_tools native failed, fallback to prompt: %s", e)
-                return await _complete_prompt(messages, on_tool=on_tool)
+                return await _complete_prompt(messages, on_tool=on_tool, user_id=user_id)
             raise
-    return await _complete_prompt(messages, on_tool=on_tool)
+    return await _complete_prompt(messages, on_tool=on_tool, user_id=user_id)

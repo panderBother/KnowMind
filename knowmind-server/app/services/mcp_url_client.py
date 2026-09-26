@@ -10,6 +10,7 @@ import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
+from urllib.parse import urlparse
 
 from mcp import ClientSession
 from mcp.client.sse import sse_client
@@ -17,6 +18,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 
 from app.core.config import settings
+from app.utils.outbound_security import validate_public_http_url
 from app.services import mcp_registry
 
 log = logging.getLogger(__name__)
@@ -94,7 +96,7 @@ class McpToolBinding:
 
 
 def list_enabled_url_bindings(user_id: str) -> list[McpUrlBinding]:
-    """已启用且配置了 url 或 command 的外部 MCP。"""
+    """已启用的外部 MCP；公网默认仅返回 URL 型配置。"""
     out: list[McpUrlBinding] = []
     for c in mcp_registry.list_tools(user_id).custom:
         if not c.enabled:
@@ -102,6 +104,8 @@ def list_enabled_url_bindings(user_id: str) -> list[McpUrlBinding]:
         url = (c.config.url or "").strip()
         command = (c.config.command or "").strip()
         if not url and not command:
+            continue
+        if command and not settings.external_mcp_stdio_enabled:
             continue
         if url:
             hdrs = dict(c.config.headers or {})
@@ -274,6 +278,8 @@ def parse_qualified_tool_name(qualified: str) -> tuple[str, str] | None:
 
 @asynccontextmanager
 async def _stdio_session(binding: McpUrlBinding) -> AsyncIterator[ClientSession]:
+    if not settings.external_mcp_stdio_enabled:
+        raise RuntimeError("服务端已禁用 command/stdio MCP")
     merged_env = {**os.environ, **binding.env} if binding.env else None
     params = StdioServerParameters(
         command=str(binding.command),
@@ -293,6 +299,9 @@ async def _url_session(binding: McpUrlBinding) -> AsyncIterator[ClientSession]:
     url = (binding.url or "").strip()
     if not url:
         raise RuntimeError("MCP 配置缺少 url")
+    if urlparse(url).scheme.lower() != "https":
+        raise RuntimeError("外部 MCP 仅允许公网 HTTPS URL")
+    await validate_public_http_url(url)
     timeout = float(settings.external_mcp_connect_timeout)
     read_timeout = float(settings.external_mcp_read_timeout)
     headers = binding.headers or None

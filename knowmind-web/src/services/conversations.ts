@@ -23,6 +23,15 @@ export type ChatMessageDto = {
   role: string;
   content: string;
   trace_id: string | null;
+  citations: import("@/services/chat").RagSourceDto[] | null;
+  attachments: Array<{ id: string; filename: string; file_type: string; size: number }> | null;
+  tool_traces: Array<{
+    tool: string;
+    ok: boolean;
+    result: Record<string, unknown>;
+    server?: string;
+    mcp_tool?: string;
+  }> | null;
   created_at: string;
 };
 

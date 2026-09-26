@@ -125,6 +125,10 @@ async def append_message(
     role: str,
     content: str,
     trace_id: str | None = None,
+    reply_to_message_id: str | None = None,
+    citations: list[dict] | None = None,
+    attachments: list[dict] | None = None,
+    tool_traces: list[dict] | None = None,
 ) -> ChatMessage:
     tok = approx_token_count(content)
     m = ChatMessage(
@@ -132,7 +136,11 @@ async def append_message(
         role=role,
         content=content,
         trace_id=trace_id,
+        reply_to_message_id=reply_to_message_id,
         token_est=tok,
+        citations_json=citations or None,
+        attachments_json=attachments or None,
+        tool_traces_json=tool_traces or None,
     )
     session.add(m)
     await session.flush()

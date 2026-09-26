@@ -106,3 +106,12 @@ export async function authChangePassword(currentPassword: string, newPassword: s
   });
   if (!res.ok) throw new Error(await parseApiError(res));
 }
+
+export async function authLogout(): Promise<void> {
+  try {
+    const res = await apiFetch("/auth/logout", { method: "POST" });
+    if (!res.ok && res.status !== 401) throw new Error(await parseApiError(res));
+  } finally {
+    clearAccessToken();
+  }
+}
