@@ -56,7 +56,7 @@ export function DocumentsPage() {
   const location = useLocation();
   const { confirm, message } = useUi();
   const fileRef = useRef<HTMLInputElement>(null);
-  const versionFileRef = useRef<HTMLInputElement>(null);
+  const uploadSectionRef = useRef<HTMLElement>(null);
   const [kbs, setKbs] = useState<KnowledgeBaseDto[]>([]);
   const [kbId, setKbId] = useState<string>("");
   const [docs, setDocs] = useState<DocumentDto[]>([]);
@@ -199,6 +199,7 @@ export function DocumentsPage() {
   const submitDocumentVersion = async (doc: DocumentDto, file: File) => {
     if (!kbId) return;
     setUploading(true);
+    setUploadProgress(0);
     setErr(null);
     try {
       const result = await uploadDocumentVersion(kbId, doc.id, file);
@@ -208,31 +209,37 @@ export function DocumentsPage() {
         message.success(`v${result.revision?.revision_no ?? ""} 已进入处理队列`);
       }
       setVersionHistoryDoc(null);
+      setVersionUploadDoc(null);
       await loadDocs();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "上传新版本失败");
       message.error(e instanceof Error ? e.message : "上传新版本失败");
     } finally {
       setUploading(false);
-      setVersionUploadDoc(null);
-      if (versionFileRef.current) versionFileRef.current.value = "";
+      setUploadProgress(0);
+      if (fileRef.current) fileRef.current.value = "";
     }
   };
 
   const openVersionUpload = (doc: DocumentDto) => {
     setVersionUploadDoc(doc);
-    window.setTimeout(() => versionFileRef.current?.click(), 0);
+    setVersionHistoryDoc(null);
+    setErr(null);
+    window.setTimeout(() => {
+      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      uploadSectionRef.current?.scrollIntoView({
+        behavior: reduceMotion ? "auto" : "smooth",
+        block: "start",
+      });
+      uploadSectionRef.current?.focus({ preventScroll: true });
+    }, 0);
   };
 
-  const onPickVersionFile = async (files: FileList | null) => {
-    const file = files?.[0];
-    if (!file || !versionUploadDoc) return;
-    const supported = filterSupportedFiles(files);
-    if (!supported.length) {
-      setErr("请选择支持的文件格式");
-      return;
-    }
-    await submitDocumentVersion(versionUploadDoc, file);
+  const cancelVersionUpload = () => {
+    if (uploading) return;
+    setVersionUploadDoc(null);
+    setErr(null);
+    if (fileRef.current) fileRef.current.value = "";
   };
 
   const uploadFiles = async (files: File[]) => {
@@ -250,6 +257,7 @@ export function DocumentsPage() {
           type: "info",
         });
         if (replace) {
+          setVersionUploadDoc(sameName);
           await submitDocumentVersion(sameName, files[0]);
           return;
         }
@@ -275,11 +283,21 @@ export function DocumentsPage() {
     }
   };
 
-  const onPickFiles = async (files: FileList | null) => {
+  const onPickUploadFiles = async (files: FileList | File[] | null) => {
     if (!files?.length) return;
     const arr = filterSupportedFiles(files);
     if (!arr.length) {
       setErr("请选择支持的文件格式（PDF、DOCX、Excel、CSV、Markdown、TXT、图片等）");
+      if (fileRef.current) fileRef.current.value = "";
+      return;
+    }
+    if (versionUploadDoc) {
+      if (arr.length !== 1) {
+        setErr("更新版本时每次只能选择一个文件");
+        if (fileRef.current) fileRef.current.value = "";
+        return;
+      }
+      await submitDocumentVersion(versionUploadDoc, arr[0]);
       return;
     }
     await uploadFiles(arr);
@@ -326,16 +344,14 @@ export function DocumentsPage() {
   };
 
   const kbName = kbs.find((k) => k.id === kbId)?.name ?? "选择知识库";
+  const changeKnowledgeBase = (nextKbId: string) => {
+    setKbId(nextKbId);
+    setVersionUploadDoc(null);
+    if (fileRef.current) fileRef.current.value = "";
+  };
 
   return (
     <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 lg:space-y-6 lg:p-8">
-      <input
-        ref={versionFileRef}
-        type="file"
-        accept={SUPPORTED_UPLOAD_ACCEPT}
-        className="hidden"
-        onChange={(event) => void onPickVersionFile(event.target.files)}
-      />
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-slate-900 lg:text-xl">文档管理</h1>
@@ -399,14 +415,18 @@ export function DocumentsPage() {
         )
       ) : (
         <>
-      <section className="space-y-3 lg:space-y-4">
+      <section
+        ref={uploadSectionRef}
+        tabIndex={-1}
+        className="scroll-mt-4 space-y-3 outline-none lg:scroll-mt-6 lg:space-y-4"
+      >
         <div className="hidden lg:block">
             <label className="mb-1 block text-xs font-medium text-slate-600">目标知识库</label>
             <div className="relative max-w-md">
               <select
                 className="w-full appearance-none rounded-lg border border-slate-200 bg-white px-3 py-2 pr-9 text-left text-sm text-slate-800"
                 value={kbId}
-                onChange={(e) => setKbId(e.target.value)}
+                onChange={(e) => changeKnowledgeBase(e.target.value)}
               >
                 <option value="" disabled>
                   请选择
@@ -426,7 +446,7 @@ export function DocumentsPage() {
             <select
               className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
               value={kbId}
-              onChange={(e) => setKbId(e.target.value)}
+              onChange={(e) => changeKnowledgeBase(e.target.value)}
             >
               <option value="" disabled>
                 请选择
@@ -443,9 +463,9 @@ export function DocumentsPage() {
             ref={fileRef}
             type="file"
             accept={SUPPORTED_UPLOAD_ACCEPT}
-            multiple
+            multiple={!versionUploadDoc}
             className="hidden"
-            onChange={(e) => void onPickFiles(e.target.files)}
+            onChange={(e) => void onPickUploadFiles(e.target.files)}
           />
 
           <DocumentUploadZone
@@ -453,8 +473,10 @@ export function DocumentsPage() {
             disabled={!kbId}
             uploading={uploading}
             uploadProgress={uploadProgress}
+            versionTarget={versionUploadDoc}
+            onCancelVersion={cancelVersionUpload}
             onBrowseClick={() => fileRef.current?.click()}
-            onSelectFiles={uploadFiles}
+            onSelectFiles={onPickUploadFiles}
           />
       </section>
 
@@ -548,7 +570,7 @@ export function DocumentsPage() {
                           className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline disabled:opacity-50"
                         >
                           <Upload className="h-3.5 w-3.5" />
-                          新版本
+                          更新版本
                         </button>
                         <button
                           type="button"
@@ -652,7 +674,7 @@ export function DocumentsPage() {
                                 onClick={() => openVersionUpload(row)}
                                 className="text-xs font-semibold text-primary hover:underline disabled:opacity-50"
                               >
-                                上传新版本
+                                更新版本
                               </button>
                               <button
                                 type="button"
