@@ -1,7 +1,7 @@
 """document revisions, lifecycle and versioned chunks
 
-Revision ID: 014_document_versioning
-Revises: 013_planner_memory_incremental
+Revision ID: 015_document_versioning
+Revises: 014_security_message_metadata
 """
 
 from typing import Sequence, Union
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import mysql
 
-revision: str = "014_document_versioning"
-down_revision: Union[str, None] = "013_planner_memory_incremental"
+revision: str = "015_document_versioning"
+down_revision: Union[str, None] = "014_security_message_metadata"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -17,12 +17,12 @@ def verify_password(plain: str, password_hash: str) -> bool:
         return False
 
 
-def create_access_token(subject: str) -> tuple[str, int]:
+def create_access_token(subject: str, *, token_version: int = 0) -> tuple[str, int]:
     """返回 (jwt, expires_in 秒)。"""
     days = settings.access_token_expire_days
     expire = datetime.now(timezone.utc) + timedelta(days=days)
     exp_ts = int(expire.timestamp())
-    payload = {"sub": subject, "exp": exp_ts, "typ": "access"}
+    payload = {"sub": subject, "exp": exp_ts, "typ": "access", "ver": token_version}
     token = jwt.encode(
         payload,
         settings.jwt_secret,
@@ -31,11 +31,11 @@ def create_access_token(subject: str) -> tuple[str, int]:
     return token, int(timedelta(days=days).total_seconds())
 
 
-def create_refresh_token(subject: str) -> tuple[str, int]:
+def create_refresh_token(subject: str, *, token_version: int = 0) -> tuple[str, int]:
     days = settings.refresh_token_expire_days
     expire = datetime.now(timezone.utc) + timedelta(days=days)
     exp_ts = int(expire.timestamp())
-    payload = {"sub": subject, "exp": exp_ts, "typ": "refresh"}
+    payload = {"sub": subject, "exp": exp_ts, "typ": "refresh", "ver": token_version}
     token = jwt.encode(
         payload,
         settings.jwt_secret,
@@ -44,40 +44,43 @@ def create_refresh_token(subject: str) -> tuple[str, int]:
     return token, int(timedelta(days=days).total_seconds())
 
 
-def decode_refresh_token(token: str) -> str | None:
+def _decode_token_claims(token: str, expected_type: str) -> dict | None:
     try:
         payload = jwt.decode(
             token,
             settings.jwt_secret,
             algorithms=[settings.jwt_algorithm],
         )
-        if payload.get("typ") != "refresh":
+        if payload.get("typ") != expected_type:
             return None
         sub = payload.get("sub")
         if sub is None or not isinstance(sub, str):
             return None
-        return sub
+        version = payload.get("ver", 0)
+        if not isinstance(version, int) or version < 0:
+            return None
+        return payload
     except JWTError:
         return None
+
+
+def decode_refresh_claims(token: str) -> dict | None:
+    return _decode_token_claims(token, "refresh")
+
+
+def decode_refresh_token(token: str) -> str | None:
+    payload = decode_refresh_claims(token)
+    return str(payload["sub"]) if payload else None
+
+
+def decode_access_claims(token: str) -> dict | None:
+    return _decode_token_claims(token, "access")
 
 
 def decode_access_token(token: str) -> str | None:
     """成功返回 user id (sub)，失败返回 None。"""
-    try:
-        payload = jwt.decode(
-            token,
-            settings.jwt_secret,
-            algorithms=[settings.jwt_algorithm],
-        )
-        typ = payload.get("typ")
-        if typ is not None and typ != "access":
-            return None
-        sub = payload.get("sub")
-        if sub is None or not isinstance(sub, str):
-            return None
-        return sub
-    except JWTError:
-        return None
+    payload = decode_access_claims(token)
+    return str(payload["sub"]) if payload else None
 
 
 def verify_token(token: str) -> bool:

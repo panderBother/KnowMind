@@ -19,20 +19,22 @@ def _ensure_file_workspace() -> None:
 
 
 @router.get("/roots", response_model=AllowedRootsResponse)
-async def list_roots(_user_id: str = Depends(get_current_user_id)) -> AllowedRootsResponse:
+async def list_roots(user_id: str = Depends(get_current_user_id)) -> AllowedRootsResponse:
     _ensure_file_workspace()
-    data = file_workspace.list_allowed_roots_payload()
+    data = file_workspace.list_allowed_roots_payload(user_id)
     return AllowedRootsResponse(**data)
 
 
 @router.post("/read", response_model=FileOpResponse)
 async def read_file(
     body: FileReadRequest,
-    _user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_current_user_id),
 ) -> FileOpResponse:
     _ensure_file_workspace()
     try:
-        data = file_workspace.read_document(body.path, max_bytes=file_workspace.max_read_bytes())
+        data = file_workspace.read_document(
+            user_id, body.path, max_bytes=file_workspace.max_read_bytes()
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return FileOpResponse(
@@ -47,11 +49,12 @@ async def read_file(
 @router.post("/write", response_model=FileOpResponse)
 async def write_file(
     body: FileWriteRequest,
-    _user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_current_user_id),
 ) -> FileOpResponse:
     _ensure_file_workspace()
     try:
         data = file_workspace.write_document(
+            user_id,
             body.path,
             body.content,
             format=body.format,  # type: ignore[arg-type]

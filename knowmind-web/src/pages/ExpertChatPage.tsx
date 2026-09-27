@@ -28,6 +28,7 @@ type Msg = {
   thinkingContent?: string;
   streamFinal?: boolean;
   ragSources?: RagSourceDto[];
+  attachments?: Array<{ id: string; filename: string; file_type: string; size: number }>;
 };
 
 export function ExpertChatPage() {
@@ -88,6 +89,8 @@ export function ExpertChatPage() {
           role: m.role === "assistant" ? "assistant" : "user",
           content: m.content,
           streamFinal: true,
+          ragSources: m.citations ?? undefined,
+          attachments: m.attachments ?? undefined,
         })),
       );
     },

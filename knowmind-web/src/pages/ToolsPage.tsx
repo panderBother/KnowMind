@@ -279,9 +279,10 @@ function CustomMcpEditModal({
                   type="radio"
                   name={`mode-${tool.id}`}
                   checked={form.mode === "command"}
-                  onChange={() => set("mode", "command")}
+                  disabled
+                  onChange={() => undefined}
                 />
-                本地 command
+                本地 command（服务端已禁用）
               </label>
             </div>
           </fieldset>
@@ -543,9 +544,8 @@ export function ToolsPage() {
         <div>
           <h1 className="text-lg font-semibold text-slate-900 lg:text-xl">工具与集成</h1>
           <p className="mt-1 max-w-2xl text-xs text-slate-600 lg:text-sm">
-            选择要在 KnowMind 中启用的能力；可粘贴 Cursor / Claude Desktop 的 mcp.json（支持{" "}
-            <code className="rounded bg-slate-100 px-1">url</code> 远程服务或{" "}
-            <code className="rounded bg-slate-100 px-1">command</code> 本地进程），对话页「外部 MCP」开关生效。
+            选择要在 KnowMind 中启用的能力；外部 MCP 仅允许公网 URL 服务，
+            <code className="rounded bg-slate-100 px-1">command</code> / stdio 本地进程已因安全原因禁用。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -583,15 +583,15 @@ export function ToolsPage() {
       {importOpen ? (
         <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 lg:rounded-xl">
           <p className="text-xs font-medium text-slate-700">
-            粘贴 mcp.json（支持 <code className="rounded bg-slate-200 px-0.5">url</code> 远程或{" "}
-            <code className="rounded bg-slate-200 px-0.5">command</code> 本地；与 Cursor 格式兼容）
+            粘贴 mcp.json（仅导入 <code className="rounded bg-slate-200 px-0.5">url</code> 远程服务；
+            command / stdio 配置会被安全策略跳过）
           </p>
           <textarea
             value={importText}
             onChange={(e) => setImportText(e.target.value)}
             rows={8}
             className="mt-2 w-full resize-y rounded-xl border border-slate-200 bg-white p-3 font-mono text-xs text-slate-800 outline-none focus:border-primary"
-            placeholder='{"mcpServers": { "my-server": { "command": "uv", "args": ["run", "python", "-m", "web_search.server"] } } }'
+            placeholder='{"mcpServers": { "my-server": { "url": "https://api.example.com/mcp" } } }'
           />
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <button

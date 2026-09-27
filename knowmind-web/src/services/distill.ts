@@ -81,6 +81,7 @@ export async function importUrlItem(
 export async function submitChatFeedback(body: {
   knowledge_base_id?: string | null;
   conversation_id?: string | null;
+  message_id?: string | null;
   query_text?: string | null;
   correction: string;
 }): Promise<void> {

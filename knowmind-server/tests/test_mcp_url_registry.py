@@ -8,7 +8,7 @@ from app.services.mcp_url_client import (
 )
 
 
-def test_import_accepts_command_and_url(tmp_path, monkeypatch) -> None:
+def test_import_rejects_command_and_accepts_url(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(mcp_registry, "_REGISTRY_DIR", tmp_path)
     uid = "user-url-1"
     raw = json.dumps(
@@ -20,13 +20,12 @@ def test_import_accepts_command_and_url(tmp_path, monkeypatch) -> None:
         },
     )
     out = mcp_registry.import_mcp_json(uid, raw)
-    assert out.imported == 2
-    assert out.skipped == 0
+    assert out.imported == 1
+    assert out.skipped == 1
+    assert any("command/stdio" in detail for detail in out.skip_details)
     tools = mcp_registry.list_tools(uid)
-    assert len(tools.custom) == 2
+    assert len(tools.custom) == 1
     by_name = {c.name: c for c in tools.custom}
-    assert by_name["local-only"].config.command == "node"
-    assert by_name["local-only"].config.cwd
     assert by_name["remote"].config.url == "https://mcp.example.com/sse"
 
 
@@ -46,6 +45,13 @@ def test_import_skips_invalid_and_duplicate(tmp_path, monkeypatch) -> None:
     )
     assert out2.imported == 0
     assert any("缺少 url 或 command" in s for s in out2.skip_details)
+
+    out3 = mcp_registry.import_mcp_json(
+        uid,
+        json.dumps({"mcpServers": {"insecure": {"url": "http://mcp.example.com/sse"}}}),
+    )
+    assert out3.imported == 0
+    assert any("HTTPS" in s for s in out3.skip_details)
 
 
 def test_list_enabled_url_bindings_merges_headers(tmp_path, monkeypatch) -> None:
@@ -82,12 +88,12 @@ def test_list_enabled_url_bindings_respects_toggle(tmp_path, monkeypatch) -> Non
     )
     mcp_registry.import_mcp_json(uid, raw)
     dto = mcp_registry.list_tools(uid)
-    assert len(dto.custom) == 2
+    assert len(dto.custom) == 1
     cid = dto.custom[0].id
     mcp_registry.update_custom_enabled(uid, cid, False)
 
     bindings = list_enabled_url_bindings(uid)
-    assert len(bindings) == 1
+    assert bindings == []
 
 
 def test_qualified_tool_name_roundtrip() -> None:

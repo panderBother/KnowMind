@@ -5,7 +5,6 @@ from app.api.deps import get_current_user_id
 from app.db.session import get_db
 from app.schemas.knowledge_item import ChatFeedbackRequest
 from app.services import distill_service as distill_svc
-from app.services.rag_context import search_kb
 
 router = APIRouter()
 

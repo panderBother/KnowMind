@@ -336,7 +336,7 @@ def _want_external_mcp(req: ChatRequest, user_id: str | None = None) -> bool:
 
 def _external_mcp_noop_hint() -> str:
     return (
-        "未调用外部 MCP：请先在「工具与集成」导入 MCP（url 或 command）并开启开关，"
+        "未调用外部 MCP：请先在「工具与集成」导入公网 HTTPS MCP URL 并开启开关，"
         "或在对话页打开「外部 MCP」。"
     )
 
@@ -655,12 +655,9 @@ def _has_write_trace(traces: list[ToolTraceEntry]) -> bool:
 def _file_tools_noop_hint(req: ChatRequest) -> str:
     msg = req.message.strip()
     if has_read_intent(msg):
-        return (
-            "未读取到文件：请写清路径，例如 "
-            "E:\\velochat\\项目聊天.md 或「E盘里的 velochat项目聊天.md」"
-        )
+        return "未读取到文件：请填写用户文件沙箱内的相对路径，例如 notes/项目聊天.md"
     if has_write_intent(msg):
-        return "未执行文件写入：请在同一条消息里写清路径（如 D:\\test\\a.md）和要保存的正文"
+        return "未执行文件写入：请在同一条消息里写清沙箱内路径（如 notes/a.md）和要保存的正文"
     return "未执行文件操作"
 
 
@@ -669,6 +666,7 @@ async def _stream_file_tools_turn(
     messages: list,
     *,
     kb_context: str = "",
+    user_id: str = "local",
 ) -> tuple[str, str, list[ToolTraceEntry]]:
     """读取/写入本地文件 + 必要时再调模型（含读文件后总结）。"""
     traces: list[ToolTraceEntry] = []
@@ -682,7 +680,9 @@ async def _stream_file_tools_turn(
 
     user_blob = "\n\n".join(unique_user_texts)
     if has_read_intent(user_blob):
-        read_traces, file_body, file_path = try_read_files_from_user_texts(unique_user_texts)
+        read_traces, file_body, file_path = try_read_files_from_user_texts(
+            unique_user_texts, user_id=user_id
+        )
         traces.extend(read_traces)
         if file_body and file_path:
             log_info("[file_tools] 读文件后生成回复 path=%s", file_path)
@@ -695,14 +695,14 @@ async def _stream_file_tools_turn(
             turn = await complete_chat_turn(summary_messages)
             return turn.reasoning, turn.content, traces
 
-    direct = try_direct_write_from_user_message(req.message.strip())
+    direct = try_direct_write_from_user_message(req.message.strip(), user_id=user_id)
     if direct:
         traces.append(direct)
 
     async def on_tool(entry: ToolTraceEntry) -> None:
         traces.append(entry)
 
-    result = await complete_chat_with_file_tools(messages, on_tool=on_tool)
+    result = await complete_chat_with_file_tools(messages, on_tool=on_tool, user_id=user_id)
     seen = {(t.name, t.arguments) for t in traces}
     for t in result.tool_traces:
         key = (t.name, t.arguments)
@@ -714,7 +714,7 @@ async def _stream_file_tools_turn(
         post_calls = build_write_calls(unique_user_texts, result.content)
         if post_calls:
             log_info("[file_tools] 模型回复后备用写入 calls=%s", len(post_calls))
-            traces.extend(execute_tool_calls(post_calls))
+            traces.extend(execute_tool_calls(post_calls, user_id=user_id))
 
     return result.reasoning, result.content, traces
 
@@ -724,6 +724,24 @@ def _yield_traces(traces: list[ToolTraceEntry]) -> list[dict]:
     for entry in traces:
         events.extend(_emit_tool_events(entry))
     return events
+
+
+def _file_trace_payload(entry: ToolTraceEntry) -> dict:
+    return {
+        "tool": entry.name,
+        "ok": entry.ok,
+        "result": entry.result,
+    }
+
+
+def _mcp_trace_payload(entry) -> dict:
+    return {
+        "tool": entry.qualified_name,
+        "ok": entry.ok,
+        "result": entry.result,
+        "server": entry.server_name,
+        "mcp_tool": entry.tool_name,
+    }
 
 
 def _enqueue_chat_memory(
@@ -813,6 +831,7 @@ async def iter_chat_stream(
     use_memory = session is not None and user_id is not None
     rag_hits: list = []
     rag_diag: dict = {}
+    rag_sources_payload: list[dict] = []
     rag_task: asyncio.Task[tuple[str, list, dict]] | None = None
     web_task: asyncio.Task[str] | None = None
     arxiv_task: asyncio.Task[str] | None = None
@@ -909,6 +928,7 @@ async def iter_chat_stream(
                     req,
                     messages,
                     kb_context=merged_kb or "",
+                    user_id=user_id or "anonymous",
                 )
                 for ev in _yield_traces(traces):
                     yield _sse_event(ev)
@@ -1018,12 +1038,18 @@ async def iter_chat_stream(
         ),
     )
 
+    attachment_rows: list[dict] = []
+    if req.attachment_ids:
+        from app.services.chat_attachment_service import attachment_metadata
+
+        attachment_rows = attachment_metadata(user_id, req.attachment_ids)
     user_row = await append_message(
         session,
         conversation_id=conv.id,
         role="user",
         content=req.message.strip(),
         trace_id=None,
+        attachments=attachment_rows,
     )
     await session.flush()
     n_user = await session.scalar(
@@ -1065,6 +1091,7 @@ async def iter_chat_stream(
             yield prefetch_out
     rag_sources_ev = await _sse_rag_sources(session, req.knowledge_base_id, rag_hits)
     if rag_sources_ev is not None:
+        rag_sources_payload = list(rag_sources_ev.get("sources") or [])
         yield _sse_event(rag_sources_ev)
     web_hint = _want_web_search(req, user_id) and not web_injected
 
@@ -1135,6 +1162,7 @@ async def iter_chat_stream(
     )
 
     assistant_body_parts: list[str] = []
+    persisted_tool_traces: list[dict] = []
     stream_ok = False
     try:
         if _want_file_tools(req, user_id):
@@ -1146,7 +1174,9 @@ async def iter_chat_stream(
                 req,
                 messages,
                 kb_context=merged_kb or "",
+                user_id=user_id,
             )
+            persisted_tool_traces.extend(_file_trace_payload(t) for t in traces)
             for ev in _yield_traces(traces):
                 yield _sse_event(ev)
             yield _sse_event(
@@ -1204,6 +1234,9 @@ async def iter_chat_stream(
                     yield sse_line
                 if mcp_turn_box:
                     t = mcp_turn_box[0]
+                    persisted_tool_traces.extend(
+                        _mcp_trace_payload(trace) for trace in t.traces
+                    )
                     body = t.content or ("（外部 MCP 失败）" if t.aborted else "（模型返回空正文）")
                     assistant_body_parts.append(body)
                 stream_ok = True
@@ -1238,6 +1271,9 @@ async def iter_chat_stream(
             role="assistant",
             content=assistant_text,
             trace_id=trace_id,
+            reply_to_message_id=user_row.id,
+            citations=rag_sources_payload,
+            tool_traces=persisted_tool_traces,
         )
         conv_ref = await session.get(Conversation, conv.id)
         if conv_ref is not None:
@@ -1261,6 +1297,7 @@ async def iter_chat_stream(
             assistant_text=assistant_text,
             assistant_message_id=asst_row.id,
         )
+        yield _sse_event({"type": "message_saved", "message_id": asst_row.id})
 
     if req.knowledge_base_id and rag_hits:
         await _log_rag_retrieval_safe(
@@ -1300,6 +1337,7 @@ async def run_chat(req: ChatRequest, *, kb_context: str = "") -> ChatResponse:
                 req,
                 messages,
                 kb_context=merged_kb or "",
+                user_id="anonymous",
             )
         else:
             reasoning, content, _raw = await complete_chat(messages)

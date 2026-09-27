@@ -19,6 +19,7 @@ from app.services import knowledge_extract_service as extract_svc
 from app.services import knowledge_item_service as item_service
 from app.services.distill_service import DistillError
 from app.services.url_import_service import distill_url_to_item_fields, fetch_url_text
+from app.services.rate_limit_service import enforce_upload_limits
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ async def preview_url_item(
     session: AsyncSession = Depends(get_db),
     user_id: str = Depends(get_current_user_id),
 ):
+    await enforce_upload_limits(user_id)
     try:
         await kb_service.get_knowledge_base(session, user_id, kb_id)
         fields = await _url_import_fields(body)
@@ -219,6 +221,7 @@ async def import_url_item(
     session: AsyncSession = Depends(get_db),
     user_id: str = Depends(get_current_user_id),
 ):
+    await enforce_upload_limits(user_id)
     try:
         fields = await _url_import_fields(body)
         item = await item_service.create_item(

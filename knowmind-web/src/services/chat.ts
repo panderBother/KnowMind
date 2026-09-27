@@ -57,6 +57,8 @@ export type ChatStreamHandlers = {
   onTraceId: (traceId: string) => void;
   /** 多轮记忆：服务端新建或确认的会话 id */
   onConversationId?: (conversationId: string, isNew: boolean) => void;
+  /** 服务端已持久化本轮助手消息。 */
+  onMessageSaved?: (messageId: string) => void;
   /** Agent 编排步骤（RAG、联网、工具等） */
   onAgentStep?: (payload: AgentStepEvent) => void;
   onDelta: (text: string) => void;
@@ -160,6 +162,10 @@ export async function streamChatMessage(
       const cid = (msg as { conversation_id: string }).conversation_id;
       const isNew = Boolean((msg as { is_new?: boolean }).is_new);
       handlers.onConversationId?.(cid, isNew);
+      return;
+    }
+    if (msg.type === "message_saved" && typeof (msg as { message_id?: string }).message_id === "string") {
+      handlers.onMessageSaved?.((msg as { message_id: string }).message_id);
       return;
     }
     if (msg.type === "agent_step") {

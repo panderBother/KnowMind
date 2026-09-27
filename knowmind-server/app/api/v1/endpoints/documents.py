@@ -24,6 +24,7 @@ from app.schemas.document import (
     DocumentVersionUploadResponse,
 )
 from app.services import document_service
+from app.services.rate_limit_service import enforce_upload_limits
 
 router = APIRouter()
 
@@ -48,6 +49,7 @@ async def upload_documents(
     user_id: str = Depends(get_current_user_id),
     files: list[UploadFile] = File(...),
 ):
+    await enforce_upload_limits(user_id)
     if not files:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "请选择至少一个文件")
     return await document_service.upload_documents(session, user_id, kb_id, files, background_tasks)

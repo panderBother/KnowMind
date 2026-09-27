@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
-import { ChevronRight, Loader2, User, Wrench } from "lucide-react";
-import { Link } from "react-router-dom";
+import { ChevronRight, Loader2, LogOut, User, Wrench } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
 
-import { authChangePassword, authMe, type UserPublic } from "@/services/auth";
+import {
+  authChangePassword,
+  authLogout,
+  authMe,
+  clearAccessToken,
+  type UserPublic,
+} from "@/services/auth";
 
 /**
  * 我的 / 设置：账户信息、改密与扩展能力入口。
  */
 export function SettingsPage() {
+  const navigate = useNavigate();
   const [user, setUser] = useState<UserPublic | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -38,9 +45,10 @@ export function SettingsPage() {
     setPwdMsg(null);
     try {
       await authChangePassword(currentPwd, newPwd);
+      clearAccessToken();
       setCurrentPwd("");
       setNewPwd("");
-      setPwdMsg("密码已更新");
+      navigate("/login", { replace: true });
     } catch (e) {
       setPwdMsg(e instanceof Error ? e.message : "修改失败");
     } finally {
@@ -119,6 +127,21 @@ export function SettingsPage() {
             </span>
             <ChevronRight className="h-4 w-4 text-slate-400" />
           </Link>
+        </li>
+        <li>
+          <button
+            type="button"
+            onClick={() => void authLogout().finally(() => navigate("/login", { replace: true }))}
+            className="flex w-full items-center justify-between rounded-2xl border border-red-100 bg-white px-4 py-3.5 text-sm font-medium text-red-700 shadow-card active:bg-red-50 lg:rounded-xl"
+          >
+            <span className="flex items-center gap-3">
+              <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-red-50 text-red-700">
+                <LogOut className="h-5 w-5" />
+              </span>
+              退出登录并撤销令牌
+            </span>
+            <ChevronRight className="h-4 w-4 text-red-300" />
+          </button>
         </li>
       </ul>
     </div>
