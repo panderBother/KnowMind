@@ -11,7 +11,6 @@ from app.indexing.vector_factory import get_vector_index
 from app.indexing.whoosh_index import (
     open_or_create_index,
     whoosh_delete_chunk,
-    whoosh_delete_chunks,
     whoosh_delete_chunks_for_doc,
     whoosh_upsert_chunks,
 )
@@ -44,12 +43,14 @@ def build_index_row(
     text: str,
     vector: list[float],
     lifecycle_status: str,
+    revision_id: str | None = None,
 ) -> dict[str, Any]:
     return {
         "chunk_id": chunk_id,
         "kb_id": kb_id,
         "user_id": user_id,
         "doc_id": doc_id or "",
+        "revision_id": revision_id or "",
         "item_id": item_id,
         "page": page,
         "text": text,

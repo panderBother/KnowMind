@@ -15,10 +15,13 @@ from app.api.deps import get_current_user_id
 from app.db.session import get_db
 from app.schemas.document import (
     DocumentConfirmImportResponse,
+    DocumentIndexReconcileResponse,
     DocumentOut,
     DocumentParsedContentOut,
     DocumentParsedContentUpdate,
+    DocumentRevisionOut,
     DocumentUploadResponse,
+    DocumentVersionUploadResponse,
 )
 from app.services import document_service
 
@@ -140,12 +143,90 @@ async def reindex_document(
     )
 
 
-@router.delete("/{kb_id}/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_document(
+@router.post(
+    "/{kb_id}/documents/{doc_id}/versions",
+    response_model=DocumentVersionUploadResponse,
+)
+async def upload_document_version(
+    kb_id: str,
+    doc_id: str,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    return await document_service.upload_document_version(
+        session, user_id, kb_id, doc_id, file, background_tasks
+    )
+
+
+@router.get(
+    "/{kb_id}/documents/{doc_id}/versions",
+    response_model=list[DocumentRevisionOut],
+)
+async def list_document_versions(
     kb_id: str,
     doc_id: str,
     session: AsyncSession = Depends(get_db),
     user_id: str = Depends(get_current_user_id),
 ):
-    await document_service.delete_document(session, user_id, kb_id, doc_id)
+    return await document_service.list_document_versions(session, user_id, kb_id, doc_id)
+
+
+@router.post(
+    "/{kb_id}/documents/{doc_id}/versions/{revision_id}/rollback",
+    response_model=DocumentVersionUploadResponse,
+)
+async def rollback_document_version(
+    kb_id: str,
+    doc_id: str,
+    revision_id: str,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    return await document_service.rollback_document_version(
+        session, user_id, kb_id, doc_id, revision_id, background_tasks
+    )
+
+
+@router.post(
+    "/{kb_id}/documents/{doc_id}/versions/{revision_id}/retry",
+    response_model=DocumentVersionUploadResponse,
+)
+async def retry_document_version(
+    kb_id: str,
+    doc_id: str,
+    revision_id: str,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    return await document_service.retry_document_version(
+        session, user_id, kb_id, doc_id, revision_id, background_tasks
+    )
+
+
+@router.post(
+    "/{kb_id}/documents/{doc_id}/reconcile-indexes",
+    response_model=DocumentIndexReconcileResponse,
+)
+async def reconcile_document_indexes(
+    kb_id: str,
+    doc_id: str,
+    session: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    return await document_service.reconcile_document_indexes(session, user_id, kb_id, doc_id)
+
+
+@router.delete("/{kb_id}/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    kb_id: str,
+    doc_id: str,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    await document_service.delete_document(session, user_id, kb_id, doc_id, background_tasks)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -106,6 +106,7 @@ async def _vector_hits(kb_id: str, query: str, top_k: int) -> list[dict[str, Any
                     "chunk_id": str(h.get("chunk_id") or ""),
                     "text": str(h.get("text") or ""),
                     "doc_id": str(h.get("doc_id") or ""),
+                    "revision_id": str(h.get("revision_id") or ""),
                     "item_id": str(h.get("item_id") or ""),
                     "page": int(h.get("page") or 0),
                     "score": distance_to_score(h.get("distance")),
@@ -173,8 +174,10 @@ async def _fuzzy_title_hits(
             score = max(
                 score,
                 max(
-                    (difflib.SequenceMatcher(None, entity, title[i : i + len(entity)]).ratio()
-                     for i in range(len(title) - len(entity) + 1)),
+                    (
+                        difflib.SequenceMatcher(None, entity, title[i : i + len(entity)]).ratio()
+                        for i in range(len(title) - len(entity) + 1)
+                    ),
                     default=0.0,
                 ),
             )
@@ -182,8 +185,10 @@ async def _fuzzy_title_hits(
             score = max(
                 score,
                 max(
-                    (difflib.SequenceMatcher(None, entity[i : i + len(title)], title).ratio()
-                     for i in range(len(entity) - len(title) + 1)),
+                    (
+                        difflib.SequenceMatcher(None, entity[i : i + len(title)], title).ratio()
+                        for i in range(len(entity) - len(title) + 1)
+                    ),
                     default=0.0,
                 ),
             )
@@ -373,9 +378,7 @@ async def hybrid_search(
         fused = fuzzy_title_hits + [
             hit for hit in fused if str(hit.get("chunk_id") or "") not in fuzzy_ids
         ]
-    bm25_score_by_id = {
-        str(h.get("chunk_id") or ""): float(h.get("score") or 0) for h in bm25_hits
-    }
+    bm25_score_by_id = {str(h.get("chunk_id") or ""): float(h.get("score") or 0) for h in bm25_hits}
     do_rerank = rerank if rerank is not None else settings.rerank_enabled
     rerank_input = fused[:rerank_pool_k] if fused else []
     if do_rerank and embed_mode != "hash" and rerank_input:
@@ -429,15 +432,26 @@ async def hybrid_search(
         item_id = str(h.get("item_id") or "").strip()
         item = items_by_id.get(item_id) if item_id else None
         doc_id = str(h.get("doc_id") or "").strip()
+        hit_revision_id = str(h.get("revision_id") or "").strip()
+        doc = docs_by_id.get(doc_id) if doc_id else None
 
         if item_id:
             if item is None or item.lifecycle_status != "published":
                 continue
         elif doc_id:
-            if doc_id not in docs_by_id:
+            if doc is None:
                 continue
         else:
             continue
+
+        if doc_id:
+            if doc is None or doc.lifecycle_status != "active":
+                continue
+            if doc.current_revision_id:
+                if not h.get("entity_fuzzy") and hit_revision_id != doc.current_revision_id:
+                    continue
+            elif hit_revision_id:
+                continue
 
         if category_id and item is not None and item.category_id != category_id:
             continue

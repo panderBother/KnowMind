@@ -1,4 +1,4 @@
-"""删除条目：关联文档时级联删除文档。"""
+"""删除条目：关联文档时执行可审计的逻辑删除。"""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ async def session(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_delete_document_linked_item_cascades_document(session: AsyncSession) -> None:
+async def test_delete_document_linked_item_soft_deletes_document(session: AsyncSession) -> None:
     user_id = "user-del-1"
     kb = await kb_svc.create_knowledge_base(session, user_id, "删除测试库")
     cat = await cat_svc.ensure_default_category(session, user_id, kb.id)
@@ -83,10 +83,15 @@ async def test_delete_document_linked_item_cascades_document(session: AsyncSessi
 
     await item_svc.delete_item(session, user_id, kb.id, item.id)
 
-    assert await session.get(KnowledgeItem, item.id) is None
-    assert await session.get(Document, doc.id) is None
+    stored_item = await session.get(KnowledgeItem, item.id)
+    stored_doc = await session.get(Document, doc.id)
+    assert stored_item is not None
+    assert stored_item.lifecycle_status == "archived"
+    assert stored_doc is not None
+    assert stored_doc.lifecycle_status == "purged"
+    assert stored_doc.deleted_at is not None
     rows = await session.execute(select(KnowledgeItem).where(KnowledgeItem.document_id == doc.id))
-    assert list(rows.scalars().all()) == []
+    assert [row.id for row in rows.scalars().all()] == [item.id]
 
 
 @pytest.mark.asyncio

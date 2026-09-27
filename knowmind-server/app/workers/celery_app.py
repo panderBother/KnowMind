@@ -34,6 +34,13 @@ def _build_celery() -> Celery:
     app.conf.task_default_queue = "knowmind-default"
     app.conf.task_always_eager = s.celery_task_always_eager
     app.conf.task_eager_propagates = True
+    if s.index_reconcile_interval_seconds > 0:
+        app.conf.beat_schedule = {
+            "reconcile-document-indexes": {
+                "task": "documents.reconcile_indexes",
+                "schedule": float(s.index_reconcile_interval_seconds),
+            }
+        }
 
     pool = s.celery_worker_pool
     if pool:

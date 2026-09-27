@@ -21,6 +21,7 @@ from app.models.orm import (  # noqa: F401, E402
     ConversationFact,
     Document,
     DocumentChunk,
+    DocumentRevision,
     KnowledgeBase,
     User,
 )

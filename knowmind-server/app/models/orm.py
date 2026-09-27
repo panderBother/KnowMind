@@ -185,6 +185,20 @@ class Document(Base):
         BigInteger, nullable=False, default=0, server_default="0"
     )
     md5: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    current_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    pending_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    source_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="upload", server_default="upload"
+    )
+    source_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="active", server_default="active", index=True
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lock_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     parsed_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     parsed_summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -210,20 +224,107 @@ class Document(Base):
         back_populates="document",
         cascade="all, delete-orphan",
     )
+    revisions: Mapped[list[DocumentRevision]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="DocumentRevision.revision_no",
+    )
+
+
+class DocumentRevision(Base):
+    """不可变的文档文件版本；成功激活后由 Document.current_revision_id 指向。"""
+
+    __tablename__ = "document_revisions"
+    __table_args__ = (
+        UniqueConstraint("document_id", "revision_no", name="uq_document_revision_no"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    created_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), index=True, nullable=False
+    )
+    revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    file_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    storage_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    file_bytes: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    source_sha256: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    extracted_text_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pipeline_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    parsed_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    parsed_summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    parsed_content: Mapped[str | None] = mapped_column(MediumText, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default="pending", index=True
+    )
+    parse_progress: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    parse_stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    added_chunk_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    changed_chunk_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    reused_chunk_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    removed_chunk_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    document: Mapped[Document] = relationship(back_populates="revisions")
+    chunks: Mapped[list[DocumentChunk]] = relationship(
+        back_populates="revision",
+        cascade="all, delete-orphan",
+    )
 
 
 class DocumentChunk(Base):
     """文档切块清单，用于内容 Hash 对比和索引差量更新。"""
 
     __tablename__ = "document_chunks"
-    __table_args__ = (UniqueConstraint("document_id", "ordinal", name="uq_document_chunk_ordinal"),)
+    __table_args__ = (
+        UniqueConstraint("revision_id", "ordinal", name="uq_document_revision_chunk_ordinal"),
+        UniqueConstraint("chunk_id", name="uq_document_chunk_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     document_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("documents.id", ondelete="CASCADE"), index=True, nullable=False
     )
+    revision_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("document_revisions.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
+    )
     chunk_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    metadata_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    vector_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="published", server_default="published", index=True
+    )
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     page: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     text: Mapped[str] = mapped_column(Text(), nullable=False)
@@ -232,6 +333,7 @@ class DocumentChunk(Base):
     )
 
     document: Mapped[Document] = relationship(back_populates="chunks")
+    revision: Mapped[DocumentRevision | None] = relationship(back_populates="chunks")
 
 
 class Conversation(Base):

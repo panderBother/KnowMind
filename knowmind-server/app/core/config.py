@@ -119,6 +119,8 @@ class Settings(BaseSettings):
 
     # true：上传后在 API 进程内起 daemon 线程解析（无需 Redis/Celery Worker，适合本机开发）；生产请 false 并用 Worker
     ingest_background_thread: bool = False
+    index_reconcile_interval_seconds: int = 1800
+    ingest_processing_timeout_seconds: int = 3600
 
     # 同一进程内同时解析的文档数（Windows + HF 下载模型建议为 1，避免缓存损坏 / 进度卡 0%）
     ingest_max_parallel: int = 1
@@ -131,7 +133,9 @@ class Settings(BaseSettings):
     edgefn_api_base_url: str = "https://api.edgefn.net/v1"
     edgefn_chat_model: str = "DeepSeek-R1-0528-Qwen3-8B"
     # 识图专用；留空则不对 EdgeFN 发 image_url（避免纯文本对话模型 400）
-    edgefn_vision_model: str | None = Field(default=None, description="支持 vision 的 EdgeFN 模型名，勿与 edgefn_chat_model 混用")
+    edgefn_vision_model: str | None = Field(
+        default=None, description="支持 vision 的 EdgeFN 模型名，勿与 edgefn_chat_model 混用"
+    )
 
     # 硅基流动：文档/图片 OCR（DeepSeek-OCR），与 EdgeFN 对话独立
     siliconflow_api_key: str | None = Field(default=None, description="Bearer Token，勿提交仓库")
@@ -181,7 +185,12 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _resolve_relative_paths(self) -> Self:
         """相对路径一律相对 knowmind-server 根目录，避免从仓库根启动时与 Worker 不一致。"""
-        for name in ("storage_local_root", "chroma_data_path", "whoosh_index_root", "chat_attachment_root"):
+        for name in (
+            "storage_local_root",
+            "chroma_data_path",
+            "whoosh_index_root",
+            "chat_attachment_root",
+        ):
             raw = getattr(self, name)
             if not raw:
                 continue

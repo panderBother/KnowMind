@@ -8,7 +8,7 @@ type Props = {
 
 /** 文档解析/入库进度条（pending / processing） */
 export function DocumentParseProgressBar({ doc, className = "" }: Props) {
-  if (doc.status !== "pending" && doc.status !== "processing") {
+  if (doc.status !== "pending" && doc.status !== "processing" && !doc.pending_revision_id) {
     return null;
   }
   const pct = documentParseProgress(doc);

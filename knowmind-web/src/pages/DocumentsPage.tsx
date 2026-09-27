@@ -6,7 +6,9 @@ import {
   ChevronDown,
   FileText,
   Filter,
+  History,
   Trash2,
+  Upload,
   XCircle,
 } from "lucide-react";
 
@@ -16,6 +18,7 @@ import { DocumentImportPreviewModal } from "@/components/DocumentImportPreviewMo
 import { DocumentParseProgressBar } from "@/components/DocumentParseProgressBar";
 import { DocumentPreviewDrawer } from "@/components/DocumentPreviewDrawer";
 import { DocumentUploadZone } from "@/components/DocumentUploadZone";
+import { DocumentVersionHistoryModal } from "@/components/DocumentVersionHistoryModal";
 import { useUi } from "@/components/ui/UiProvider";
 import { getAccessToken } from "@/services/auth";
 import {
@@ -26,6 +29,7 @@ import {
   retryDocumentParse,
   SUPPORTED_UPLOAD_ACCEPT,
   uploadDocumentsWithProgress,
+  uploadDocumentVersion,
   type DocumentDto,
 } from "@/services/documents";
 import { listKnowledgeBases, type KnowledgeBaseDto } from "@/services/knowledgeBases";
@@ -52,6 +56,7 @@ export function DocumentsPage() {
   const location = useLocation();
   const { confirm, message } = useUi();
   const fileRef = useRef<HTMLInputElement>(null);
+  const versionFileRef = useRef<HTMLInputElement>(null);
   const [kbs, setKbs] = useState<KnowledgeBaseDto[]>([]);
   const [kbId, setKbId] = useState<string>("");
   const [docs, setDocs] = useState<DocumentDto[]>([]);
@@ -65,6 +70,8 @@ export function DocumentsPage() {
   const [previewPage, setPreviewPage] = useState<number | null>(null);
   const [importPreviewDoc, setImportPreviewDoc] = useState<DocumentDto | null>(null);
   const [itemDocFilter, setItemDocFilter] = useState<{ id: string; name: string } | null>(null);
+  const [versionUploadDoc, setVersionUploadDoc] = useState<DocumentDto | null>(null);
+  const [versionHistoryDoc, setVersionHistoryDoc] = useState<DocumentDto | null>(null);
 
   const loadKbs = useCallback(async () => {
     if (!getAccessToken()) {
@@ -147,7 +154,10 @@ export function DocumentsPage() {
   }, [loadDocs]);
 
   const hasQueuedDocs = useMemo(
-    () => docs.some((d) => d.status === "pending" || d.status === "processing"),
+    () =>
+      docs.some(
+        (d) => d.status === "pending" || d.status === "processing" || Boolean(d.pending_revision_id),
+      ),
     [docs],
   );
 
@@ -186,8 +196,65 @@ export function DocumentsPage() {
     }
   };
 
+  const submitDocumentVersion = async (doc: DocumentDto, file: File) => {
+    if (!kbId) return;
+    setUploading(true);
+    setErr(null);
+    try {
+      const result = await uploadDocumentVersion(kbId, doc.id, file);
+      if (result.unchanged) {
+        message.info("文件内容与当前版本完全一致，无需更新");
+      } else {
+        message.success(`v${result.revision?.revision_no ?? ""} 已进入处理队列`);
+      }
+      setVersionHistoryDoc(null);
+      await loadDocs();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "上传新版本失败");
+      message.error(e instanceof Error ? e.message : "上传新版本失败");
+    } finally {
+      setUploading(false);
+      setVersionUploadDoc(null);
+      if (versionFileRef.current) versionFileRef.current.value = "";
+    }
+  };
+
+  const openVersionUpload = (doc: DocumentDto) => {
+    setVersionUploadDoc(doc);
+    window.setTimeout(() => versionFileRef.current?.click(), 0);
+  };
+
+  const onPickVersionFile = async (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file || !versionUploadDoc) return;
+    const supported = filterSupportedFiles(files);
+    if (!supported.length) {
+      setErr("请选择支持的文件格式");
+      return;
+    }
+    await submitDocumentVersion(versionUploadDoc, file);
+  };
+
   const uploadFiles = async (files: File[]) => {
     if (!kbId || !files.length) return;
+    if (files.length === 1) {
+      const sameName = docs.find(
+        (doc) => doc.status === "done" && doc.filename.toLowerCase() === files[0].name.toLowerCase(),
+      );
+      if (sameName) {
+        const replace = await confirm({
+          title: "检测到同名文档",
+          message: `知识库中已有「${sameName.filename}」。选择“更新已有”会保留版本历史；选择取消则作为新文档上传。`,
+          confirmText: "更新已有",
+          cancelText: "作为新文档上传",
+          type: "info",
+        });
+        if (replace) {
+          await submitDocumentVersion(sameName, files[0]);
+          return;
+        }
+      }
+    }
     setUploading(true);
     setUploadProgress(0);
     setErr(null);
@@ -262,6 +329,13 @@ export function DocumentsPage() {
 
   return (
     <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 lg:space-y-6 lg:p-8">
+      <input
+        ref={versionFileRef}
+        type="file"
+        accept={SUPPORTED_UPLOAD_ACCEPT}
+        className="hidden"
+        onChange={(event) => void onPickVersionFile(event.target.files)}
+      />
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-slate-900 lg:text-xl">文档管理</h1>
@@ -463,13 +537,38 @@ export function DocumentsPage() {
                       </button>
                     ) : null}
                     {row.status === "done" ? (
-                      <button
-                        type="button"
-                        onClick={() => onEditDocumentItems(row)}
-                        className="text-xs font-semibold text-primary hover:underline"
-                      >
-                        编辑内容
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          disabled={Boolean(row.pending_revision_id)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openVersionUpload(row);
+                          }}
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline disabled:opacity-50"
+                        >
+                          <Upload className="h-3.5 w-3.5" />
+                          新版本
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setVersionHistoryDoc(row);
+                          }}
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600 hover:underline"
+                        >
+                          <History className="h-3.5 w-3.5" />
+                          版本
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onEditDocumentItems(row)}
+                          className="text-xs font-semibold text-primary hover:underline"
+                        >
+                          编辑内容
+                        </button>
+                      </>
                     ) : null}
                     <button
                       type="button"
@@ -546,13 +645,30 @@ export function DocumentsPage() {
                             </button>
                           ) : null}
                           {row.status === "done" ? (
-                            <button
-                              type="button"
-                              onClick={() => onEditDocumentItems(row)}
-                              className="text-xs font-semibold text-primary hover:underline"
-                            >
-                              编辑内容
-                            </button>
+                            <>
+                              <button
+                                type="button"
+                                disabled={Boolean(row.pending_revision_id)}
+                                onClick={() => openVersionUpload(row)}
+                                className="text-xs font-semibold text-primary hover:underline disabled:opacity-50"
+                              >
+                                上传新版本
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setVersionHistoryDoc(row)}
+                                className="text-xs font-semibold text-slate-600 hover:underline"
+                              >
+                                版本历史
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => onEditDocumentItems(row)}
+                                className="text-xs font-semibold text-primary hover:underline"
+                              >
+                                编辑内容
+                              </button>
+                            </>
                           ) : null}
                           <button
                             type="button"
@@ -604,6 +720,16 @@ export function DocumentsPage() {
           }}
           onEditItems={onEditDocumentItems}
           onDelete={(doc) => void onDeleteDocument(doc)}
+        />
+      ) : null}
+
+      {versionHistoryDoc && kbId ? (
+        <DocumentVersionHistoryModal
+          kbId={kbId}
+          doc={versionHistoryDoc}
+          onClose={() => setVersionHistoryDoc(null)}
+          onUploadVersion={openVersionUpload}
+          onChanged={() => void loadDocs()}
         />
       ) : null}
     </div>

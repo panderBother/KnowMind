@@ -18,6 +18,7 @@ _schema = Schema(
     kb_id=ID(stored=True),
     user_id=ID(stored=True),
     doc_id=ID(stored=True),
+    revision_id=ID(stored=True),
     item_id=ID(stored=True),
     lifecycle_status=ID(stored=True),
     page=TEXT(stored=True),
@@ -74,6 +75,7 @@ def whoosh_upsert_chunks(root: str | Path, rows: list[dict[str, Any]]) -> None:
                 kb_id=r["kb_id"],
                 user_id=r["user_id"],
                 doc_id=str(r.get("doc_id") or ""),
+                revision_id=str(r.get("revision_id") or ""),
                 item_id=str(r.get("item_id") or ""),
                 lifecycle_status=str(r.get("lifecycle_status") or "published"),
                 page=str(int(r["page"])),
@@ -118,6 +120,18 @@ def whoosh_delete_chunks_for_doc(root: str | Path, doc_id: str) -> None:
     writer = AsyncWriter(ix)
     writer.delete_by_term("doc_id", doc_id)
     writer.commit()
+
+
+def whoosh_list_chunk_ids_for_doc(root: str | Path, doc_id: str) -> list[str]:
+    if not doc_id:
+        return []
+    ix = open_or_create_index(root)
+    with ix.searcher() as searcher:
+        return [
+            str(hit.get("chunk_id") or "")
+            for hit in searcher.search(wq.Term("doc_id", doc_id), limit=None)
+            if hit.get("chunk_id")
+        ]
 
 
 def whoosh_search(
@@ -170,6 +184,7 @@ def whoosh_search(
                         "chunk_id": str(hit.get("chunk_id") or ""),
                         "text": str(hit.get("content") or ""),
                         "doc_id": str(hit.get("doc_id") or ""),
+                        "revision_id": str(hit.get("revision_id") or ""),
                         "item_id": str(hit.get("item_id") or ""),
                         "page": page,
                         "score": max(0.0, min(1.0, norm)),

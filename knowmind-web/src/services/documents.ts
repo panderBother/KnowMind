@@ -10,6 +10,10 @@ export type DocumentDto = {
   chunk_count: number;
   file_bytes: number;
   md5: string | null;
+  sha256: string | null;
+  current_revision_id: string | null;
+  pending_revision_id: string | null;
+  lifecycle_status: string;
   title: string | null;
   parsed_title: string | null;
   parsed_summary: string | null;
@@ -18,6 +22,36 @@ export type DocumentDto = {
   error_message: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type DocumentRevisionDto = {
+  id: string;
+  document_id: string;
+  created_by: string;
+  revision_no: number;
+  filename: string;
+  file_type: string | null;
+  file_bytes: number;
+  source_sha256: string;
+  pipeline_fingerprint: string;
+  status: string;
+  parse_progress: number;
+  parse_stage: string | null;
+  error_message: string | null;
+  chunk_count: number;
+  added_chunk_count: number;
+  changed_chunk_count: number;
+  reused_chunk_count: number;
+  removed_chunk_count: number;
+  created_at: string;
+  activated_at: string | null;
+  is_current: boolean;
+};
+
+export type DocumentVersionUploadResult = {
+  document: DocumentDto;
+  revision: DocumentRevisionDto | null;
+  unchanged: boolean;
 };
 
 export type DocumentUploadResult = {
@@ -123,6 +157,56 @@ export function uploadDocumentsWithProgress(
 export async function deleteDocument(kbId: string, docId: string): Promise<void> {
   const res = await apiFetch(`/knowledge-bases/${kbId}/documents/${docId}`, { method: "DELETE" });
   if (!res.ok) throw new Error(await parseError(res));
+}
+
+export async function uploadDocumentVersion(
+  kbId: string,
+  docId: string,
+  file: File,
+): Promise<DocumentVersionUploadResult> {
+  const body = new FormData();
+  body.append("file", file);
+  const res = await apiFetch(`/knowledge-bases/${kbId}/documents/${docId}/versions`, {
+    method: "POST",
+    body,
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return (await res.json()) as DocumentVersionUploadResult;
+}
+
+export async function listDocumentVersions(
+  kbId: string,
+  docId: string,
+): Promise<DocumentRevisionDto[]> {
+  const res = await apiFetch(`/knowledge-bases/${kbId}/documents/${docId}/versions`);
+  if (!res.ok) throw new Error(await parseError(res));
+  return (await res.json()) as DocumentRevisionDto[];
+}
+
+export async function rollbackDocumentVersion(
+  kbId: string,
+  docId: string,
+  revisionId: string,
+): Promise<DocumentVersionUploadResult> {
+  const res = await apiFetch(
+    `/knowledge-bases/${kbId}/documents/${docId}/versions/${revisionId}/rollback`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(await parseError(res));
+  return (await res.json()) as DocumentVersionUploadResult;
+}
+
+export async function retryDocumentVersion(
+  kbId: string,
+  docId: string,
+  revisionId: string,
+): Promise<DocumentVersionUploadResult> {
+  const res = await apiFetch(
+    `/knowledge-bases/${kbId}/documents/${docId}/versions/${revisionId}/retry`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(await parseError(res));
+  return (await res.json()) as DocumentVersionUploadResult;
 }
 
 export async function getDocument(kbId: string, docId: string): Promise<DocumentDto> {
