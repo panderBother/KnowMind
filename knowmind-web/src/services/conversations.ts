@@ -11,6 +11,10 @@ export type ConversationDto = {
   id: string;
   knowledge_base_id: string | null;
   expert_id?: string | null;
+  parent_conversation_id?: string | null;
+  branched_from_message_id?: string | null;
+  is_pinned: boolean;
+  model_mode: "fast" | "balanced" | "deep";
   deep_research: boolean;
   web_search: boolean;
   title: string | null;
@@ -23,6 +27,7 @@ export type ChatMessageDto = {
   role: string;
   content: string;
   trace_id: string | null;
+  generation_status: "generating" | "completed" | "failed" | "stopped";
   citations: import("@/services/chat").RagSourceDto[] | null;
   attachments: Array<{ id: string; filename: string; file_type: string; size: number }> | null;
   tool_traces: Array<{
@@ -109,6 +114,29 @@ export async function listConversations(limit = 50): Promise<ConversationDto[]> 
   return (await res.json()) as ConversationDto[];
 }
 
+export type ConversationPage = {
+  items: ConversationDto[];
+  hasMore: boolean;
+};
+
+export async function listConversationPage(options: {
+  limit?: number;
+  offset?: number;
+  query?: string;
+} = {}): Promise<ConversationPage> {
+  const limit = options.limit ?? 24;
+  const params = new URLSearchParams({
+    limit: String(limit + 1),
+    offset: String(options.offset ?? 0),
+    main_chat_only: "true",
+  });
+  if (options.query?.trim()) params.set("q", options.query.trim());
+  const res = await apiFetch(`/conversations?${params.toString()}`);
+  if (!res.ok) throw new Error(await parseApiError(res));
+  const rows = (await res.json()) as ConversationDto[];
+  return { items: rows.slice(0, limit), hasMore: rows.length > limit };
+}
+
 /** 某专家下的历史会话 */
 export async function listExpertConversations(expertId: string, limit = 40): Promise<ConversationDto[]> {
   const res = await apiFetch(
@@ -126,6 +154,33 @@ export async function updateConversationTitle(
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title }),
+  });
+  if (!res.ok) throw new Error(await parseApiError(res));
+  return (await res.json()) as ConversationDto;
+}
+
+export async function setConversationPinned(
+  conversationId: string,
+  isPinned: boolean,
+): Promise<ConversationDto> {
+  const res = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ is_pinned: isPinned }),
+  });
+  if (!res.ok) throw new Error(await parseApiError(res));
+  return (await res.json()) as ConversationDto;
+}
+
+export async function branchConversation(
+  conversationId: string,
+  fromMessageId: string,
+  title?: string,
+): Promise<ConversationDto> {
+  const res = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}/branch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from_message_id: fromMessageId, title: title || null }),
   });
   if (!res.ok) throw new Error(await parseApiError(res));
   return (await res.json()) as ConversationDto;

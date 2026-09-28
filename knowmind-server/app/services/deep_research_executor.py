@@ -11,6 +11,7 @@ from app.services.chat_prefetch import (
     fetch_arxiv_md,
     fetch_semantic_scholar_md,
     merge_context_parts,
+    sources_from_markdown,
     want_arxiv,
     want_semantic_scholar,
 )
@@ -149,4 +150,9 @@ async def execute_deep_research_prefetch(
         web_injected=bool(web_md.strip()),
         arxiv_injected=bool(arxiv_md.strip()),
         semantic_scholar_injected=bool(s2_md.strip()),
+        sources=[
+            *sources_from_markdown(web_md, "web"),
+            *sources_from_markdown(arxiv_md, "arxiv"),
+            *sources_from_markdown(s2_md, "semantic_scholar"),
+        ],
     )

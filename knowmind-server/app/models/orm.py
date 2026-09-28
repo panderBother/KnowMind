@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
@@ -354,6 +355,16 @@ class Conversation(Base):
     expert_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("expert_agents.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    parent_conversation_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, index=True
+    )
+    branched_from_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    is_pinned: Mapped[bool] = mapped_column(
+        Boolean(), nullable=False, default=False, server_default="0", index=True
+    )
+    model_mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="balanced", server_default="balanced"
+    )
     deep_research: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
     web_search: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -392,6 +403,9 @@ class Conversation(Base):
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
+    __table_args__ = (
+        Index("ix_chat_messages_conversation_sequence", "conversation_id", "sequence_no"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     conversation_id: Mapped[str] = mapped_column(
@@ -401,6 +415,12 @@ class ChatMessage(Base):
     content: Mapped[str] = mapped_column(Text(), nullable=False)
     trace_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     token_est: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    sequence_no: Mapped[int] = mapped_column(
+        Integer(), nullable=False, default=0, server_default="0"
+    )
+    generation_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="completed", server_default="completed"
+    )
     reply_to_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     citations_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     attachments_json: Mapped[list | None] = mapped_column(JSON, nullable=True)

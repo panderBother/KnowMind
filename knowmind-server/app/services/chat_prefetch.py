@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.models.schemas import ChatRequest
 
@@ -16,6 +17,51 @@ class PrefetchResult:
     arxiv_injected: bool
     semantic_scholar_injected: bool
     errors: dict[str, str] | None = None
+    sources: list[dict] = field(default_factory=list)
+
+
+def sources_from_markdown(markdown: str, source_type: str) -> list[dict]:
+    """把联网/学术检索 Markdown 归一化为统一来源面板数据。"""
+    rows: list[dict] = []
+    current: dict | None = None
+    paragraph_lines: list[str] = []
+
+    def finish() -> None:
+        nonlocal current, paragraph_lines
+        if current and current.get("url"):
+            if paragraph_lines:
+                current["snippet"] = " ".join(paragraph_lines)[:500]
+            rows.append(current)
+        current = None
+        paragraph_lines = []
+
+    for raw_line in (markdown or "").splitlines():
+        line = raw_line.strip()
+        heading = re.match(r"^###\s+\[(\d+)]\s+(.+)$", line)
+        if heading:
+            finish()
+            current = {
+                "index": len(rows) + 1,
+                "title": heading.group(2).strip(),
+                "snippet": "",
+                "source_type": source_type,
+            }
+            continue
+        if current is None or not line:
+            continue
+        url_match = re.match(
+            r"^-\s+(?:\*\*)?链接(?:\*\*)?[：:]\s*(https?://\S+)", line
+        )
+        if url_match:
+            current["url"] = url_match.group(1).rstrip(".,，。)")
+            continue
+        summary_match = re.match(r"^-\s+(?:\*\*)?摘要(?:\*\*)?[：:]\s*(.+)$", line)
+        if summary_match:
+            paragraph_lines.append(summary_match.group(1).strip())
+        elif not line.startswith("-"):
+            paragraph_lines.append(line)
+    finish()
+    return rows[:10]
 
 
 def merge_context_parts(*parts: str) -> str:

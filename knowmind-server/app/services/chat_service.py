@@ -62,6 +62,7 @@ from app.services.chat_prefetch import (
     fetch_arxiv_md,
     fetch_semantic_scholar_md,
     merge_context_parts,
+    sources_from_markdown,
     want_arxiv,
     want_semantic_scholar,
     yield_prefetch_steps,
@@ -253,6 +254,11 @@ async def _stream_prefetch_bundle(
             arxiv_injected=bool((arxiv_md or "").strip()),
             semantic_scholar_injected=bool((s2_md or "").strip()),
             errors=errors or None,
+            sources=[
+                *sources_from_markdown(web_md, "web"),
+                *sources_from_markdown(arxiv_md, "arxiv"),
+                *sources_from_markdown(s2_md, "semantic_scholar"),
+            ],
         )
 
     async for item in yield_prefetch_steps(
@@ -800,6 +806,12 @@ async def iter_chat_stream(
         yield _sse_event({"type": "done"})
         return
 
+    if req.model_mode == "deep":
+        req.deep_research = True
+        req.web_search = True
+    elif req.model_mode == "fast":
+        req.deep_research = False
+
     planning_context = ""
     if session is not None and user_id is not None and req.conversation_id:
         conv_for_plan = await session.get(Conversation, req.conversation_id)
@@ -825,13 +837,14 @@ async def iter_chat_stream(
     )
     yield _sse_event(planner_sse(execution_plan))
     req = apply_plan_to_request(req, execution_plan)
-    use_vector_memory = "memory_retrieval" in execution_plan.steps
+    use_vector_memory = "memory_retrieval" in execution_plan.steps and req.model_mode != "fast"
     use_rag_retrieval = "rag_retrieval" in execution_plan.steps
 
     use_memory = session is not None and user_id is not None
     rag_hits: list = []
     rag_diag: dict = {}
     rag_sources_payload: list[dict] = []
+    external_sources_payload: list[dict] = []
     rag_task: asyncio.Task[tuple[str, list, dict]] | None = None
     web_task: asyncio.Task[str] | None = None
     arxiv_task: asyncio.Task[str] | None = None
@@ -903,11 +916,23 @@ async def iter_chat_stream(
             if isinstance(prefetch_out, PrefetchResult):
                 merged_kb = prefetch_out.merged_context
                 web_injected = prefetch_out.web_injected
+                external_sources_payload = prefetch_out.sources
             else:
                 yield prefetch_out
         rag_sources_ev = await _sse_rag_sources(session, req.knowledge_base_id, rag_hits)
         if rag_sources_ev is not None:
-            yield _sse_event(rag_sources_ev)
+            rag_sources_payload = list(rag_sources_ev.get("sources") or [])
+        combined_sources = [*rag_sources_payload, *external_sources_payload]
+        for index, source in enumerate(combined_sources, 1):
+            source["index"] = index
+        if combined_sources:
+            yield _sse_event(
+                {
+                    "type": "rag_sources",
+                    "kb_id": req.knowledge_base_id or "",
+                    "sources": combined_sources,
+                }
+            )
         web_hint = _want_web_search(req, user_id) and not web_injected
         messages = build_chat_messages(
             req.message,
@@ -1027,6 +1052,7 @@ async def iter_chat_stream(
         deep_research=req.deep_research,
         web_search=req.web_search,
         expert_id=expert_id,
+        model_mode=req.model_mode,
     )
     yield _sse_event({"type": "conversation_id", "conversation_id": conv.id, "is_new": is_new})
     yield _sse_event(
@@ -1067,6 +1093,7 @@ async def iter_chat_stream(
             conv_row.title = raw[:80] + ("…" if len(raw) > 80 else "")
     await session.commit()
     await session.refresh(user_row)
+    yield _sse_event({"type": "user_message_saved", "message_id": user_row.id})
 
     if req.knowledge_base_id:
         from app.services.usage_analytics_service import log_usage_safe, record_chat_turn
@@ -1087,12 +1114,24 @@ async def iter_chat_stream(
         if isinstance(prefetch_out, PrefetchResult):
             merged_kb = prefetch_out.merged_context
             web_injected = prefetch_out.web_injected
+            external_sources_payload = prefetch_out.sources
         else:
             yield prefetch_out
     rag_sources_ev = await _sse_rag_sources(session, req.knowledge_base_id, rag_hits)
     if rag_sources_ev is not None:
         rag_sources_payload = list(rag_sources_ev.get("sources") or [])
-        yield _sse_event(rag_sources_ev)
+    combined_sources = [*rag_sources_payload, *external_sources_payload]
+    for index, source in enumerate(combined_sources, 1):
+        source["index"] = index
+    rag_sources_payload = combined_sources
+    if combined_sources:
+        yield _sse_event(
+            {
+                "type": "rag_sources",
+                "kb_id": req.knowledge_base_id or "",
+                "sources": combined_sources,
+            }
+        )
     web_hint = _want_web_search(req, user_id) and not web_injected
 
     all_msgs = await load_messages_ordered(session, conv.id)
@@ -1161,9 +1200,23 @@ async def iter_chat_stream(
         expert_prompt=expert_prompt,
     )
 
+    asst_row = await append_message(
+        session,
+        conversation_id=conv.id,
+        role="assistant",
+        content="",
+        trace_id=trace_id,
+        generation_status="generating",
+        reply_to_message_id=user_row.id,
+    )
+    await session.commit()
+    await session.refresh(asst_row)
+    yield _sse_event({"type": "message_saved", "message_id": asst_row.id})
+
     assistant_body_parts: list[str] = []
     persisted_tool_traces: list[dict] = []
     stream_ok = False
+    failure_message = ""
     try:
         if _want_file_tools(req, user_id):
             yield _sse_event(
@@ -1256,25 +1309,30 @@ async def iter_chat_stream(
         if stream_ok:
             yield _sse_event(_agent_step_sse("llm_generate", status="done", detail="正文输出完成"))
     except RuntimeError as e:
+        failure_message = str(e)
         yield _sse_event({"type": "error", "message": str(e)})
         yield _sse_event(_agent_step_sse("error", status="error", detail=str(e)))
+    except asyncio.CancelledError:
+        asst_row.content = "".join(assistant_body_parts).strip()
+        asst_row.token_est = approx_token_count(asst_row.content)
+        asst_row.generation_status = "stopped"
+        asst_row.citations_json = rag_sources_payload or None
+        asst_row.tool_traces_json = persisted_tool_traces or None
+        await session.commit()
+        raise
     except Exception as e:  # noqa: BLE001
         msg = f"对话上游异常：{e!s}"
+        failure_message = msg
         yield _sse_event({"type": "error", "message": msg})
         yield _sse_event(_agent_step_sse("error", status="error", detail=msg))
 
     if stream_ok:
         assistant_text = "".join(assistant_body_parts).strip() or "（模型返回空正文）"
-        asst_row = await append_message(
-            session,
-            conversation_id=conv.id,
-            role="assistant",
-            content=assistant_text,
-            trace_id=trace_id,
-            reply_to_message_id=user_row.id,
-            citations=rag_sources_payload,
-            tool_traces=persisted_tool_traces,
-        )
+        asst_row.content = assistant_text
+        asst_row.token_est = approx_token_count(assistant_text)
+        asst_row.generation_status = "completed"
+        asst_row.citations_json = rag_sources_payload or None
+        asst_row.tool_traces_json = persisted_tool_traces or None
         conv_ref = await session.get(Conversation, conv.id)
         if conv_ref is not None:
             ut = int(user_row.token_est or approx_token_count(user_row.content))
@@ -1297,7 +1355,14 @@ async def iter_chat_stream(
             assistant_text=assistant_text,
             assistant_message_id=asst_row.id,
         )
-        yield _sse_event({"type": "message_saved", "message_id": asst_row.id})
+    else:
+        partial = "".join(assistant_body_parts).strip()
+        asst_row.content = partial or failure_message or "生成失败，请重试"
+        asst_row.token_est = approx_token_count(asst_row.content)
+        asst_row.generation_status = "failed"
+        asst_row.citations_json = rag_sources_payload or None
+        asst_row.tool_traces_json = persisted_tool_traces or None
+        await session.commit()
 
     if req.knowledge_base_id and rag_hits:
         await _log_rag_retrieval_safe(
@@ -1315,6 +1380,12 @@ async def iter_chat_stream(
 async def run_chat(req: ChatRequest, *, kb_context: str = "") -> ChatResponse:
     """同步 JSON：一次性返回模型正文（含可选推理过程，前置在 reply 中）。"""
     trace_id = str(uuid.uuid4())
+
+    if req.model_mode == "deep":
+        req.deep_research = True
+        req.web_search = True
+    elif req.model_mode == "fast":
+        req.deep_research = False
 
     if not settings.edgefn_api_key:
         return ChatResponse(

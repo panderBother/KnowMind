@@ -1,19 +1,32 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from starlette.responses import Response
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_id
 from app.db.session import get_db
-from app.models.orm import Conversation
-from app.schemas.conversation import ChatMessageOut, ConversationCreate, ConversationOut, ConversationUpdate
+from app.models.orm import ChatMessage, Conversation
+from app.schemas.conversation import (
+    ChatMessageOut,
+    ConversationBranchRequest,
+    ConversationCreate,
+    ConversationOut,
+    ConversationUpdate,
+)
 from app.schemas.knowledge_item import ExtractKnowledgeRequest
 from app.schemas.report import GenerateReportRequest, ResearchReportOut
 from app.services import knowledge_extract_service as extract_svc
 from app.services import report_service as report_svc
 from app.services.distill_service import DistillError
 from app.services.report_service import ReportError
-from app.services.conversation_service import create_conversation, get_conversation_for_user, load_messages_ordered
+from app.services.conversation_service import (
+    branch_conversation,
+    create_conversation,
+    get_conversation_for_user,
+    load_messages_ordered,
+)
 
 router = APIRouter()
 
@@ -31,6 +44,7 @@ async def create_conversation_endpoint(
         deep_research=body.deep_research,
         web_search=body.web_search,
         title=body.title,
+        model_mode=body.model_mode,
     )
     await session.commit()
     await session.refresh(conv)
@@ -42,6 +56,8 @@ async def list_conversations(
     session: AsyncSession = Depends(get_db),
     user_id: str = Depends(get_current_user_id),
     limit: int = 50,
+    offset: int = Query(default=0, ge=0),
+    q: str | None = Query(default=None, max_length=100),
     expert_id: str | None = Query(default=None, description="仅列出该专家下的会话"),
     main_chat_only: bool = Query(
         default=False,
@@ -54,7 +70,24 @@ async def list_conversations(
         stmt = stmt.where(Conversation.expert_id == expert_id.strip())
     elif main_chat_only:
         stmt = stmt.where(Conversation.expert_id.is_(None))
-    stmt = stmt.order_by(Conversation.updated_at.desc()).limit(lim)
+    search = (q or "").strip()
+    if search:
+        pattern = f"%{search}%"
+        matching_conversations = select(ChatMessage.conversation_id).where(
+            ChatMessage.content.ilike(pattern)
+        )
+        stmt = stmt.where(
+            or_(Conversation.title.ilike(pattern), Conversation.id.in_(matching_conversations))
+        )
+    stmt = (
+        stmt.order_by(
+            Conversation.is_pinned.desc(),
+            Conversation.updated_at.desc(),
+            Conversation.id.desc(),
+        )
+        .offset(offset)
+        .limit(lim)
+    )
     q = await session.execute(stmt)
     return list(q.scalars().all())
 
@@ -67,6 +100,21 @@ async def list_messages(
 ):
     await get_conversation_for_user(session, conversation_id=conversation_id, user_id=user_id)
     rows = await load_messages_ordered(session, conversation_id)
+    # 进程退出或连接中断可能来不及处理 CancelledError。超过安全窗口后，
+    # 将遗留的 generating 标记为 stopped，让刷新后的客户端可以明确重试。
+    stale_before = datetime.now(timezone.utc) - timedelta(minutes=30)
+    changed = False
+    for row in rows:
+        created_at = row.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        if row.generation_status == "generating" and created_at < stale_before:
+            row.generation_status = "stopped"
+            if not row.content.strip():
+                row.content = "生成中断，请重试"
+            changed = True
+    if changed:
+        await session.commit()
     return rows
 
 
@@ -92,9 +140,27 @@ async def update_conversation(
     if body.title is not None:
         stripped = body.title.strip()
         conv.title = stripped if stripped else None
+    if body.is_pinned is not None:
+        conv.is_pinned = body.is_pinned
     await session.commit()
     await session.refresh(conv)
     return conv
+
+
+@router.post("/{conversation_id}/branch", response_model=ConversationOut)
+async def branch_conversation_endpoint(
+    conversation_id: str,
+    body: ConversationBranchRequest,
+    session: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    return await branch_conversation(
+        session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        from_message_id=body.from_message_id,
+        title=body.title,
+    )
 
 
 @router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -21,6 +21,9 @@ export type RagSourceDto = {
   snippet: string;
   page?: number | null;
   score?: number | null;
+  /** 联网 / 学术来源。知识库引用通常没有 URL。 */
+  url?: string | null;
+  source_type?: "web" | "arxiv" | "semantic_scholar" | string | null;
 };
 
 export type ChatRequestBody = {
@@ -28,6 +31,7 @@ export type ChatRequestBody = {
   knowledge_base_id: string | null;
   deep_research: boolean;
   web_search: boolean;
+  model_mode?: "fast" | "balanced" | "deep";
   arxiv?: boolean;
   semantic_scholar?: boolean;
   /** 启用服务端本地文件读写（OpenAI tools） */
@@ -59,6 +63,8 @@ export type ChatStreamHandlers = {
   onConversationId?: (conversationId: string, isNew: boolean) => void;
   /** 服务端已持久化本轮助手消息。 */
   onMessageSaved?: (messageId: string) => void;
+  /** 服务端已持久化本轮用户消息。 */
+  onUserMessageSaved?: (messageId: string) => void;
   /** Agent 编排步骤（RAG、联网、工具等） */
   onAgentStep?: (payload: AgentStepEvent) => void;
   onDelta: (text: string) => void;
@@ -85,6 +91,7 @@ function chatBodyJson(body: ChatRequestBody): string {
     knowledge_base_id: body.knowledge_base_id,
     deep_research: body.deep_research,
     web_search: body.web_search,
+    model_mode: body.model_mode ?? "balanced",
     arxiv: body.arxiv ?? false,
     semantic_scholar: body.semantic_scholar ?? false,
     file_tools: body.file_tools ?? false,
@@ -168,6 +175,10 @@ export async function streamChatMessage(
       handlers.onMessageSaved?.((msg as { message_id: string }).message_id);
       return;
     }
+    if (msg.type === "user_message_saved" && typeof (msg as { message_id?: string }).message_id === "string") {
+      handlers.onUserMessageSaved?.((msg as { message_id: string }).message_id);
+      return;
+    }
     if (msg.type === "agent_step") {
       const step = typeof (msg as { step?: string }).step === "string" ? (msg as { step: string }).step : "";
       const statusRaw = (msg as { status?: string }).status;
@@ -218,7 +229,7 @@ export async function streamChatMessage(
     if (msg.type === "rag_sources") {
       const kbId = typeof (msg as { kb_id?: string }).kb_id === "string" ? (msg as { kb_id: string }).kb_id : "";
       const raw = (msg as { sources?: unknown }).sources;
-      if (kbId && Array.isArray(raw)) {
+      if (Array.isArray(raw)) {
         const sources = raw.filter(
           (s): s is RagSourceDto =>
             typeof s === "object" &&

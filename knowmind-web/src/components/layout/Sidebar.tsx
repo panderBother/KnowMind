@@ -4,12 +4,15 @@ import {
   Bot,
   FileText,
   LayoutDashboard,
+  LogOut,
   MessageSquare,
   Settings,
   Sparkles,
   Wrench,
 } from "lucide-react";
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
+
+import { authLogout } from "@/services/auth";
 
 function isProductionPath(pathname: string): boolean {
   return pathname === "/production" || /\/knowledge-bases\/[^/]+\/production$/.test(pathname);
@@ -29,6 +32,7 @@ const NAV = [
 
 export function Sidebar() {
   const location = useLocation();
+  const navigate = useNavigate();
 
   return (
     <aside className="hidden w-56 shrink-0 flex-col border-r border-slate-200 bg-white lg:flex">
@@ -60,6 +64,16 @@ export function Sidebar() {
           </NavLink>
         ))}
       </nav>
+      <div className="border-t border-slate-100 p-2">
+        <button
+          type="button"
+          onClick={() => void authLogout().finally(() => navigate("/login", { replace: true }))}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-slate-500 transition hover:bg-red-50 hover:text-red-700 active:translate-y-px"
+        >
+          <LogOut className="h-4 w-4" />
+          退出登录
+        </button>
+      </div>
     </aside>
   );
 }

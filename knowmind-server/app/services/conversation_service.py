@@ -36,6 +36,9 @@ async def create_conversation(
     web_search: bool,
     title: str | None = None,
     expert_id: str | None = None,
+    model_mode: str = "balanced",
+    parent_conversation_id: str | None = None,
+    branched_from_message_id: str | None = None,
 ) -> Conversation:
     kb_ok: str | None = None
     if knowledge_base_id and str(knowledge_base_id).strip():
@@ -62,6 +65,9 @@ async def create_conversation(
         deep_research=deep_research,
         web_search=web_search,
         title=title,
+        model_mode=model_mode,
+        parent_conversation_id=parent_conversation_id,
+        branched_from_message_id=branched_from_message_id,
     )
     session.add(conv)
     await session.flush()
@@ -77,6 +83,7 @@ async def resolve_conversation(
     deep_research: bool,
     web_search: bool,
     expert_id: str | None = None,
+    model_mode: str = "balanced",
 ) -> tuple[Conversation, bool]:
     """
     返回 (会话, 是否本次新建)。
@@ -98,6 +105,7 @@ async def resolve_conversation(
         conv.knowledge_base_id = kb_ok
         conv.deep_research = deep_research
         conv.web_search = web_search
+        conv.model_mode = model_mode
         if expert_ok and not conv.expert_id:
             from app.models.orm import ExpertAgent
 
@@ -114,6 +122,7 @@ async def resolve_conversation(
         deep_research=deep_research,
         web_search=web_search,
         expert_id=expert_ok,
+        model_mode=model_mode,
     )
     return conv, True
 
@@ -125,17 +134,26 @@ async def append_message(
     role: str,
     content: str,
     trace_id: str | None = None,
+    generation_status: str = "completed",
     reply_to_message_id: str | None = None,
     citations: list[dict] | None = None,
     attachments: list[dict] | None = None,
     tool_traces: list[dict] | None = None,
 ) -> ChatMessage:
     tok = approx_token_count(content)
+    sequence_result = await session.execute(
+        select(func.max(ChatMessage.sequence_no)).where(
+            ChatMessage.conversation_id == conversation_id
+        )
+    )
+    sequence_no = int(sequence_result.scalar_one_or_none() or 0) + 1
     m = ChatMessage(
         conversation_id=conversation_id,
         role=role,
         content=content,
         trace_id=trace_id,
+        sequence_no=sequence_no,
+        generation_status=generation_status,
         reply_to_message_id=reply_to_message_id,
         token_est=tok,
         citations_json=citations or None,
@@ -151,9 +169,75 @@ async def load_messages_ordered(session: AsyncSession, conversation_id: str) -> 
     q = await session.execute(
         select(ChatMessage)
         .where(ChatMessage.conversation_id == conversation_id)
-        .order_by(ChatMessage.created_at.asc()),
+        .order_by(
+            ChatMessage.sequence_no.asc(),
+            ChatMessage.created_at.asc(),
+            ChatMessage.id.asc(),
+        ),
     )
     return list(q.scalars().all())
+
+
+async def branch_conversation(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    conversation_id: str,
+    from_message_id: str,
+    title: str | None = None,
+) -> Conversation:
+    """复制目标提问之前的上下文，创建一条可独立继续的会话分支。"""
+    source = await get_conversation_for_user(
+        session, conversation_id=conversation_id, user_id=user_id
+    )
+    messages = await load_messages_ordered(session, source.id)
+    target_index = next((i for i, row in enumerate(messages) if row.id == from_message_id), -1)
+    if target_index < 0:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "分支起点消息不存在")
+    target = messages[target_index]
+    source_user_id = target.reply_to_message_id if target.role == "assistant" else target.id
+    source_user_index = next(
+        (i for i, row in enumerate(messages) if row.id == source_user_id and row.role == "user"),
+        -1,
+    )
+    if source_user_index < 0:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "无法定位该回答对应的用户问题")
+
+    branch_title = (title or "").strip() or f"{(source.title or '新对话')[:220]} · 分支"
+    branch = await create_conversation(
+        session,
+        user_id=user_id,
+        knowledge_base_id=source.knowledge_base_id,
+        deep_research=source.deep_research,
+        web_search=source.web_search,
+        title=branch_title,
+        expert_id=source.expert_id,
+        model_mode=source.model_mode,
+        parent_conversation_id=source.id,
+        branched_from_message_id=target.id,
+    )
+
+    id_map: dict[str, str] = {}
+    clone_rows = messages[:source_user_index]
+    for row in clone_rows:
+        cloned = await append_message(
+            session,
+            conversation_id=branch.id,
+            role=row.role,
+            content=row.content,
+            trace_id=row.trace_id,
+            generation_status=(
+                row.generation_status if row.generation_status == "completed" else "stopped"
+            ),
+            reply_to_message_id=id_map.get(row.reply_to_message_id or ""),
+            citations=row.citations_json,
+            attachments=row.attachments_json,
+            tool_traces=row.tool_traces_json,
+        )
+        id_map[row.id] = cloned.id
+    await session.commit()
+    await session.refresh(branch)
+    return branch
 
 
 async def load_summaries_concat(session: AsyncSession, conversation_id: str) -> str:

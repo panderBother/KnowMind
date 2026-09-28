@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
@@ -12,6 +14,7 @@ class ChatRequest(BaseModel):
     knowledge_base_id: str | None = None
     deep_research: bool = False
     web_search: bool = False
+    model_mode: Literal["fast", "balanced", "deep"] = "balanced"
     arxiv: bool = Field(default=False, description="启用 arXiv 学术检索")
     semantic_scholar: bool = Field(default=False, description="启用 Semantic Scholar 检索")
     file_tools: bool = Field(

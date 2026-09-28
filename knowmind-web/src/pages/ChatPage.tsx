@@ -4,19 +4,26 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useNavigate } from "react-router-dom";
 import {
   BookOpen,
+  Copy,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Download,
   ExternalLink,
   GripVertical,
+  GitBranch,
   Loader2,
   MessageSquare,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   Send,
+  Search,
   Sparkles,
   SquarePen,
+  Square,
+  RefreshCw,
   Trash2,
   X,
 } from "lucide-react";
@@ -24,7 +31,7 @@ import { AssistantMarkdown } from "@/components/AssistantMarkdown";
 import { ChatMediaGallery } from "@/components/ChatMediaGallery";
 import { useUi } from "@/components/ui/UiProvider";
 import { getAccessToken } from "@/services/auth";
-import { ChatRagSources } from "@/components/ChatRagSources";
+import { ChatSourcePanel } from "@/components/ChatSourcePanel";
 import { streamChatMessage, type AgentStepEvent, type ChatToolResult, type RagSourceDto } from "@/services/chat";
 import {
   downloadChatAttachment,
@@ -37,8 +44,10 @@ import {
   fetchConversationMessages,
   formatConversationLabel,
   getStoredConversationId,
-  listConversations,
+  listConversationPage,
   deleteConversation,
+  branchConversation,
+  setConversationPinned,
   updateConversationTitle,
   setStoredConversationId,
 } from "@/services/conversations";
@@ -79,6 +88,7 @@ type ChatMessage = {
   images?: string[];
   trace_id?: string;
   streamFinal?: boolean;
+  generationStatus?: "generating" | "completed" | "failed" | "stopped";
   thinkingContent?: string;
   fileToolLogs?: FileToolLog[];
   /** MCP 工具返回的图片 / 视频，直接内嵌展示 */
@@ -138,6 +148,7 @@ function revokeMessageImages(msgs: ChatMessage[]) {
 type LeftRailTab = "sessions" | "knowledge";
 
 const EXTERNAL_MCP_STORAGE_KEY = "knowmind_external_mcp";
+const CONVERSATION_PAGE_SIZE = 24;
 
 function readExternalMcpPreference(): boolean {
   try {
@@ -163,6 +174,7 @@ export function ChatPage() {
   const { confirm, prompt, message } = useUi();
   const bottomRef = useRef<HTMLDivElement>(null);
   const leftPanelRef = useRef<ImperativePanelHandle>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const [kbs, setKbs] = useState<KnowledgeBaseDto[]>([]);
   const [kbId, setKbId] = useState<string>("");
@@ -170,6 +182,7 @@ export function ChatPage() {
   const [input, setInput] = useState("");
   const [deepResearch, setDeepResearch] = useState(false);
   const [webSearch, setWebSearch] = useState(false);
+  const [modelMode, setModelMode] = useState<"fast" | "balanced" | "deep">("balanced");
   const [arxiv, setArxiv] = useState(false);
   const [semanticScholar, setSemanticScholar] = useState(false);
   const [fileTools, setFileTools] = useState(false);
@@ -186,6 +199,10 @@ export function ChatPage() {
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [conversations, setConversations] = useState<ConversationDto[]>([]);
   const [loadingConvList, setLoadingConvList] = useState(false);
+  const [loadingMoreConversations, setLoadingMoreConversations] = useState(false);
+  const [hasMoreConversations, setHasMoreConversations] = useState(false);
+  const [conversationQuery, setConversationQuery] = useState("");
+  const conversationQueryRef = useRef("");
   const [switchingConv, setSwitchingConv] = useState(false);
   const [mobileSessionsOpen, setMobileSessionsOpen] = useState(false);
   /** 桌面左侧栏：会话与知识库分栏，避免混在同一滚动区 */
@@ -237,14 +254,44 @@ export function ChatPage() {
     if (!getAccessToken()) return;
     setLoadingConvList(true);
     try {
-      const rows = await listConversations(80);
-      setConversations(rows);
+      const page = await listConversationPage({
+        limit: CONVERSATION_PAGE_SIZE,
+        offset: 0,
+        query: conversationQueryRef.current,
+      });
+      setConversations(page.items);
+      setHasMoreConversations(page.hasMore);
     } catch {
       /* 列表失败不阻断对话 */
     } finally {
       setLoadingConvList(false);
     }
   }, []);
+
+  const loadMoreConversations = useCallback(async () => {
+    if (loadingMoreConversations || !hasMoreConversations) return;
+    setLoadingMoreConversations(true);
+    try {
+      const page = await listConversationPage({
+        limit: CONVERSATION_PAGE_SIZE,
+        offset: conversations.length,
+        query: conversationQueryRef.current,
+      });
+      setConversations((rows) => {
+        const known = new Set(rows.map((row) => row.id));
+        return [...rows, ...page.items.filter((row) => !known.has(row.id))];
+      });
+      setHasMoreConversations(page.hasMore);
+    } finally {
+      setLoadingMoreConversations(false);
+    }
+  }, [conversations.length, hasMoreConversations, loadingMoreConversations]);
+
+  useEffect(() => {
+    conversationQueryRef.current = conversationQuery;
+    const timer = window.setTimeout(() => void loadConversationList(), 250);
+    return () => window.clearTimeout(timer);
+  }, [conversationQuery, loadConversationList]);
 
   useEffect(() => {
     if (!getAccessToken()) return;
@@ -264,27 +311,27 @@ export function ChatPage() {
       .catch(() => undefined);
   }, []);
 
-  useEffect(() => {
-    if (getAccessToken()) void loadConversationList();
-  }, [loadConversationList]);
-
   const applyConversationPayload = useCallback((conv: ConversationDto, msgs: Awaited<ReturnType<typeof fetchConversationMessages>>) => {
     setConversationId(conv.id);
     setStoredConversationId(conv.id);
-    if (conv.knowledge_base_id) setKbId(conv.knowledge_base_id);
+    setKbId(conv.knowledge_base_id ?? "");
     setDeepResearch(conv.deep_research);
     setWebSearch(conv.web_search);
+    setModelMode(conv.model_mode || "balanced");
     setMessages((prev) => {
       revokeMessageImages(prev);
-      return msgs.map((m) => ({
+      const restored: ChatMessage[] = msgs.map((m) => ({
         id: m.id,
         serverMessageId: m.id,
         role: m.role === "assistant" ? "assistant" : "user",
         content: m.content,
         trace_id: m.trace_id ?? undefined,
-        streamFinal: true,
+        streamFinal: m.generation_status !== "generating",
+        generationStatus: m.generation_status,
         ragSources: m.citations ?? undefined,
-        ragKbId: m.citations?.length ? conv.knowledge_base_id ?? undefined : undefined,
+        ragKbId: m.citations?.some((source) => !source.url)
+          ? conv.knowledge_base_id ?? undefined
+          : undefined,
         attachments: m.attachments ?? undefined,
         fileToolLogs:
           m.role === "assistant"
@@ -296,6 +343,18 @@ export function ChatPage() {
             : undefined,
         mediaItems: m.role === "assistant" ? extractMediaFromText(m.content) : undefined,
       }));
+      const last = restored.at(-1);
+      if (last?.role === "user" && last.serverMessageId) {
+        restored.push({
+          id: `recovery-${last.id}`,
+          serverMessageId: last.serverMessageId,
+          role: "assistant",
+          content: "上次生成未完成，可以从这里重试。",
+          streamFinal: true,
+          generationStatus: "stopped",
+        });
+      }
+      return restored;
     });
   }, []);
 
@@ -332,6 +391,20 @@ export function ChatPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
+
+  useEffect(() => {
+    if (!conversationId || loading || hydrating) return;
+    if (!messages.some((row) => row.generationStatus === "generating")) return;
+    const timer = window.setTimeout(() => {
+      void Promise.all([
+        fetchConversation(conversationId),
+        fetchConversationMessages(conversationId),
+      ])
+        .then(([conversation, rows]) => applyConversationPayload(conversation, rows))
+        .catch(() => undefined);
+    }, 1800);
+    return () => window.clearTimeout(timer);
+  }, [applyConversationPayload, conversationId, hydrating, loading, messages]);
 
   const selectConversation = useCallback(
     async (id: string) => {
@@ -431,19 +504,24 @@ export function ChatPage() {
     }
   };
 
-  const handleSend = async () => {
-    const trimmed = input.trim();
-    const hasAttachments = pendingAttachments.length > 0;
+  const handleSend = async (options?: {
+    text?: string;
+    conversationId?: string;
+    withoutAttachments?: boolean;
+  }) => {
+    const trimmed = (options?.text ?? input).trim();
+    const attachmentsForRequest = options?.withoutAttachments ? [] : pendingAttachments;
+    const hasAttachments = attachmentsForRequest.length > 0;
     if ((!trimmed && !hasAttachments) || loading || hydrating || switchingConv) return;
     const text = trimmed || "请描述并分析我上传的附件内容。";
-    const attachmentsToSend = pendingAttachments;
+    const attachmentsToSend = attachmentsForRequest;
     const sentAttachmentIds = attachmentsToSend.map((a) => a.id);
     const sentImages = attachmentsToSend
       .filter((a) => isImageAttachment(a) && a.previewUrl)
       .map((a) => a.previewUrl as string);
     setErr(null);
-    setInput("");
-    setPendingAttachments([]);
+    if (options?.text === undefined) setInput("");
+    if (!options?.withoutAttachments) setPendingAttachments([]);
     const userMsg: ChatMessage = {
       id: randomId(),
       role: "user",
@@ -462,11 +540,16 @@ export function ChatPage() {
       role: "assistant",
       content: "",
       streamFinal: false,
+      generationStatus: "generating",
     };
     setMessages((m) => [...m, userMsg, assistantPlaceholder]);
     setLoading(true);
     let acc = "";
     let thinkingAcc = "";
+    let streamFailed = false;
+    let userServerMessageId: string | undefined;
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     try {
       await streamChatMessage(
         {
@@ -474,12 +557,13 @@ export function ChatPage() {
           knowledge_base_id: kbId || null,
           deep_research: deepResearch,
           web_search: webSearch,
+          model_mode: modelMode,
           arxiv,
           semantic_scholar: semanticScholar,
           file_tools: fileTools,
           external_mcp: externalMcp,
           attachment_ids: sentAttachmentIds,
-          conversation_id: conversationId,
+          conversation_id: options?.conversationId ?? conversationId,
         },
         {
           onTraceId: (traceId) => {
@@ -495,6 +579,14 @@ export function ChatPage() {
             setMessages((rows) =>
               rows.map((row) =>
                 row.id === assistantId ? { ...row, serverMessageId: messageId } : row,
+              ),
+            );
+          },
+          onUserMessageSaved: (messageId) => {
+            userServerMessageId = messageId;
+            setMessages((rows) =>
+              rows.map((row) =>
+                row.id === userMsg.id ? { ...row, serverMessageId: messageId } : row,
               ),
             );
           },
@@ -581,11 +673,18 @@ export function ChatPage() {
                 if (row.id !== assistantId) return row;
                 const { visible } = partitionThinkingBlocks(acc);
                 const thinkingContent = buildThinkingContent(thinkingAcc, acc, sources);
-                return { ...row, ragKbId, ragSources: sources, content: visible, thinkingContent };
+                return {
+                  ...row,
+                  ragKbId: ragKbId || undefined,
+                  ragSources: sources,
+                  content: visible,
+                  thinkingContent,
+                };
               }),
             );
           },
           onError: (msg) => {
+            streamFailed = true;
             setErr(msg);
             setMessages((m) =>
               m.map((row) => {
@@ -597,6 +696,7 @@ export function ChatPage() {
                     ? acc
                     : `**调用失败** ${msg}`,
                   streamFinal: true,
+                  generationStatus: "failed",
                   thinkingContent,
                   streamStatus: msg,
                 };
@@ -613,6 +713,7 @@ export function ChatPage() {
                   ...row,
                   content: visible.trim() || row.content,
                   streamFinal: true,
+                  generationStatus: streamFailed ? "failed" : "completed",
                   thinkingContent: thinkingContent || row.thinkingContent,
                   streamStatus: undefined,
                 };
@@ -621,9 +722,27 @@ export function ChatPage() {
             setLoading(false);
           },
         },
+        controller.signal,
       );
     } catch (e) {
       const { visible: visibleAcc } = partitionThinkingBlocks(acc);
+      if (e instanceof DOMException && e.name === "AbortError") {
+        setMessages((rows) =>
+          rows.map((row) =>
+            row.id === assistantId
+              ? {
+                  ...row,
+                  content: visibleAcc.trim() || row.content,
+                  serverMessageId: row.serverMessageId ?? userServerMessageId,
+                  streamFinal: true,
+                  generationStatus: "stopped",
+                  streamStatus: undefined,
+                }
+              : row,
+          ),
+        );
+        return;
+      }
       const msg = e instanceof Error ? e.message : "发送失败";
       setErr(msg);
       const mdBody = visibleAcc
@@ -631,10 +750,19 @@ export function ChatPage() {
         : `**请求失败** ${msg}`;
       setMessages((m) =>
         m.map((row) =>
-          row.id === assistantId ? { ...row, content: mdBody, streamFinal: true } : row,
+          row.id === assistantId
+            ? {
+                ...row,
+                content: mdBody,
+                serverMessageId: row.serverMessageId ?? userServerMessageId,
+                streamFinal: true,
+                generationStatus: "failed",
+              }
+            : row,
         ),
       );
     } finally {
+      if (abortControllerRef.current === controller) abortControllerRef.current = null;
       setLoading(false);
       setMessages((rows) =>
         rows.map((row) =>
@@ -652,7 +780,92 @@ export function ChatPage() {
     }
   };
 
+  const stopGeneration = () => {
+    abortControllerRef.current?.abort();
+  };
+
+  const copyMessage = async (content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      message.success("已复制");
+    } catch {
+      message.error("复制失败，请手动选择文本");
+    }
+  };
+
+  const questionForMessage = (target: ChatMessage): ChatMessage | null => {
+    const index = messages.findIndex((row) => row.id === target.id);
+    if (target.role === "user") return target;
+    for (let i = index - 1; i >= 0; i -= 1) {
+      if (messages[i]?.role === "user") return messages[i];
+    }
+    return null;
+  };
+
+  const continueInBranch = async (
+    target: ChatMessage,
+    nextQuestion: string,
+    title: string,
+  ) => {
+    if (!conversationId) {
+      setErr("当前会话尚未保存，无法创建分支");
+      return;
+    }
+    const sourceMessageId = target.serverMessageId ?? target.id;
+    setSwitchingConv(true);
+    setErr(null);
+    try {
+      const branch = await branchConversation(conversationId, sourceMessageId, title);
+      const branchMessages = await fetchConversationMessages(branch.id);
+      applyConversationPayload(branch, branchMessages);
+      setSwitchingConv(false);
+      await handleSend({
+        text: nextQuestion,
+        conversationId: branch.id,
+        withoutAttachments: true,
+      });
+      void loadConversationList();
+    } catch (error) {
+      const text = error instanceof Error ? error.message : "创建会话分支失败";
+      setErr(text);
+      message.error(text);
+      setSwitchingConv(false);
+    }
+  };
+
+  const regenerateMessage = async (target: ChatMessage) => {
+    const question = questionForMessage(target);
+    if (!question?.content.trim()) return;
+    await continueInBranch(target, question.content, "重新生成的回答");
+  };
+
+  const editMessageInBranch = async (target: ChatMessage) => {
+    const next = await prompt({
+      title: "编辑并创建分支",
+      message: "原会话会保留，新问题将在独立分支中继续。",
+      defaultValue: target.content,
+      multiline: true,
+      confirmText: "创建分支",
+      validate: (value) => (value.trim() ? null : "问题不能为空"),
+    });
+    if (!next?.trim() || next.trim() === target.content.trim()) return;
+    await continueInBranch(target, next.trim(), "编辑问题后的分支");
+  };
+
+  const toggleConversationPin = useCallback(
+    async (conversation: ConversationDto) => {
+      try {
+        await setConversationPinned(conversation.id, !conversation.is_pinned);
+        await loadConversationList();
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : "置顶操作失败");
+      }
+    },
+    [loadConversationList, message],
+  );
+
   const newChat = () => {
+    abortControllerRef.current?.abort();
     setMessages((prev) => {
       revokeMessageImages(prev);
       return [];
@@ -800,6 +1013,17 @@ export function ChatPage() {
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             {leftRailTab === "sessions" ? (
               <div className="flex min-h-0 flex-1 flex-col">
+                <div className="shrink-0 px-2 pb-1 pt-2">
+                  <label className="flex items-center gap-2 rounded-lg bg-slate-100 px-2.5 py-2 text-slate-500 focus-within:ring-2 focus-within:ring-primary/20">
+                    <Search className="h-3.5 w-3.5 shrink-0" />
+                    <input
+                      value={conversationQuery}
+                      onChange={(event) => setConversationQuery(event.target.value)}
+                      placeholder="搜索标题或消息"
+                      className="min-w-0 flex-1 bg-transparent text-xs text-slate-800 outline-none placeholder:text-slate-400"
+                    />
+                  </label>
+                </div>
                 <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2 pt-1">
                   <div className="mb-2 flex items-center justify-between px-1">
                     <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
@@ -832,6 +1056,7 @@ export function ChatPage() {
                         variant="desktop"
                         onSelect={() => void selectConversation(c.id)}
                         onRename={() => void handleRenameConversation(c)}
+                        onPin={() => void toggleConversationPin(c)}
                         onDelete={() => void handleDeleteConversation(c)}
                       />
                     ))}
@@ -840,6 +1065,16 @@ export function ChatPage() {
                     <p className="px-1 py-3 text-[11px] leading-relaxed text-slate-500">
                       暂无历史会话。发送第一条消息后，会话会保存并出现在此列表。
                     </p>
+                  ) : null}
+                  {hasMoreConversations ? (
+                    <button
+                      type="button"
+                      disabled={loadingMoreConversations}
+                      onClick={() => void loadMoreConversations()}
+                      className="mt-2 w-full rounded-lg py-2 text-xs font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 disabled:opacity-50"
+                    >
+                      {loadingMoreConversations ? "加载中…" : "加载更多"}
+                    </button>
                   ) : null}
                 </div>
                 <div className="shrink-0 border-t border-slate-100 bg-slate-50/90 px-2 py-2">
@@ -973,6 +1208,15 @@ export function ChatPage() {
             <span>会话</span>
             {loadingConvList ? <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" aria-hidden /> : null}
           </div>
+          <label className="mb-2 flex items-center gap-2 rounded-lg bg-slate-100 px-3 py-2 text-slate-500">
+            <Search className="h-4 w-4" />
+            <input
+              value={conversationQuery}
+              onChange={(event) => setConversationQuery(event.target.value)}
+              placeholder="搜索会话"
+              className="min-w-0 flex-1 bg-transparent text-sm text-slate-800 outline-none"
+            />
+          </label>
           <button
             type="button"
             onClick={newChat}
@@ -996,10 +1240,21 @@ export function ChatPage() {
                 variant="mobile"
                 onSelect={() => void selectConversation(c.id)}
                 onRename={() => void handleRenameConversation(c)}
+                onPin={() => void toggleConversationPin(c)}
                 onDelete={() => void handleDeleteConversation(c)}
               />
             ))}
           </ul>
+          {hasMoreConversations ? (
+            <button
+              type="button"
+              disabled={loadingMoreConversations}
+              onClick={() => void loadMoreConversations()}
+              className="w-full rounded-lg py-2 text-sm text-slate-600 hover:bg-slate-100"
+            >
+              {loadingMoreConversations ? "加载中…" : "加载更多"}
+            </button>
+          ) : null}
         </div>
       ) : null}
 
@@ -1071,6 +1326,25 @@ export function ChatPage() {
                 </ul>
               ) : null}
               {m.content ? <p className="whitespace-pre-wrap break-words">{m.content}</p> : null}
+              <div className="mt-2 flex justify-end gap-1 border-t border-white/15 pt-1.5">
+                <button
+                  type="button"
+                  onClick={() => void copyMessage(m.content)}
+                  className="rounded-md p-1 text-white/70 transition hover:bg-white/10 hover:text-white"
+                  title="复制"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  disabled={loading || !conversationId || !m.serverMessageId}
+                  onClick={() => void editMessageInBranch(m)}
+                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-white/75 transition hover:bg-white/10 hover:text-white disabled:opacity-40"
+                  title="编辑问题并创建分支"
+                >
+                  <GitBranch className="h-3.5 w-3.5" /> 编辑
+                </button>
+              </div>
             </div>
           ) : (
             <div
@@ -1080,6 +1354,15 @@ export function ChatPage() {
               <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
                 <Sparkles className="h-4 w-4 text-primary" />
                 KnowMind
+                {m.generationStatus && m.generationStatus !== "completed" ? (
+                  <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal text-slate-500">
+                    {m.generationStatus === "generating"
+                      ? "生成中"
+                      : m.generationStatus === "stopped"
+                        ? "已停止"
+                        : "生成失败"}
+                  </span>
+                ) : null}
                 {m.trace_id ? (
                   <span className="ml-auto font-mono text-[10px] font-normal normal-case text-slate-400">
                     {m.trace_id.slice(0, 8)}…
@@ -1135,40 +1418,52 @@ export function ChatPage() {
                     本次未返回可见推理字段（与服务商 / 模型实现有关）。
                   </p>
                 ))}
-              {m.ragSources && m.ragSources.length > 0 && m.ragKbId ? (
-                <ChatRagSources kbId={m.ragKbId} sources={m.ragSources} />
-              ) : null}
-              {!hideTextBelowMedia && (m.fileToolLogs ?? []).length > 0 ? (
-                <ul className="mb-3 space-y-1.5 rounded-lg border border-emerald-100 bg-emerald-50/80 px-3 py-2 text-xs text-emerald-900">
-                  {(m.fileToolLogs ?? []).map((log, i) => (
-                    <li
-                      key={`${log.tool}-${i}`}
-                      className={`break-all ${log.ok ? "" : "text-red-800"}`}
-                    >
-                      <span className="font-medium">{log.tool}</span>
-                      <span className={log.ok ? "text-emerald-700" : "text-red-600"}> · </span>
-                      {log.summary}
-                    </li>
-                  ))}
-                </ul>
+              {!hideTextBelowMedia ? (
+                <ChatSourcePanel
+                  kbId={m.ragKbId}
+                  sources={m.ragSources}
+                  toolLogs={m.fileToolLogs}
+                />
               ) : null}
               {!hideTextBelowMedia ? (
                 <AssistantMarkdown
                   markdown={assistantBody}
                   isStreaming={!(m.streamFinal ?? true)}
                   kbId={m.ragKbId}
-                  citations={m.ragSources}
+                  citations={m.ragSources?.filter((source) => !source.url)}
                 />
               ) : null}
-              {(m.streamFinal ?? true) && assistantBody && !hideTextBelowMedia ? (
+              {(m.streamFinal ?? true) &&
+              (assistantBody || m.generationStatus === "failed" || m.generationStatus === "stopped") &&
+              !hideTextBelowMedia ? (
                 <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-2">
                   <button
                     type="button"
-                    onClick={() => void handleFeedback(m)}
-                    className="text-xs font-medium text-slate-500 hover:text-red-600"
+                    onClick={() => void copyMessage(assistantBody)}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 transition hover:text-slate-900"
                   >
-                    不满意 / 纠错
+                    <Copy className="h-3.5 w-3.5" /> 复制
                   </button>
+                  <button
+                    type="button"
+                    disabled={loading || !conversationId || !m.serverMessageId}
+                    onClick={() => void regenerateMessage(m)}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 transition hover:text-primary disabled:opacity-40"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    {m.generationStatus === "failed" || m.generationStatus === "stopped"
+                      ? "重试"
+                      : "重新生成"}
+                  </button>
+                  {!m.generationStatus || m.generationStatus === "completed" ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleFeedback(m)}
+                      className="text-xs font-medium text-slate-500 hover:text-red-600"
+                    >
+                      不满意 / 纠错
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -1303,6 +1598,26 @@ export function ChatPage() {
               {uploadingAttachment ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" strokeWidth={2.25} />}
             </button>
             <div className="scrollbar-none flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <label className="shrink-0">
+                <span className="sr-only">回答模式</span>
+                <select
+                  value={modelMode}
+                  disabled={loading}
+                  onChange={(event) => {
+                    const next = event.target.value as "fast" | "balanced" | "deep";
+                    setModelMode(next);
+                    if (next === "deep") {
+                      setDeepResearch(true);
+                      setWebSearch(true);
+                    }
+                  }}
+                  className="rounded-full border-0 bg-slate-900 px-2.5 py-1 text-xs font-medium text-white outline-none ring-0 focus:ring-2 focus:ring-primary/30"
+                >
+                  <option value="fast">快速模式</option>
+                  <option value="balanced">标准模式</option>
+                  <option value="deep">深度模式</option>
+                </select>
+              </label>
               <Toggle label="深度研究" on={deepResearch} onToggle={() => {
                 const next = !deepResearch;
                 setDeepResearch(next);
@@ -1361,12 +1676,12 @@ export function ChatPage() {
             </div>
             <button
               type="button"
-              disabled={loading || hydrating || switchingConv || (!input.trim() && pendingAttachments.length === 0)}
-              onClick={() => void handleSend()}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-primary px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-primary-hover active:scale-[0.98] disabled:opacity-50 lg:rounded-lg lg:px-4 lg:text-sm"
+              disabled={!loading && (hydrating || switchingConv || (!input.trim() && pendingAttachments.length === 0))}
+              onClick={() => (loading ? stopGeneration() : void handleSend())}
+              className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold text-white shadow-sm transition active:scale-[0.98] disabled:opacity-50 lg:rounded-lg lg:px-4 lg:text-sm ${loading ? "bg-slate-800 hover:bg-slate-700" : "bg-primary hover:bg-primary-hover"}`}
             >
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" strokeWidth={2} />}
-              发送
+              {loading ? <Square className="h-3.5 w-3.5 fill-current" /> : <Send className="h-4 w-4" strokeWidth={2} />}
+              {loading ? "停止" : "发送"}
             </button>
           </div>
         </div>
@@ -1421,6 +1736,7 @@ function ConversationRow({
   variant,
   onSelect,
   onRename,
+  onPin,
   onDelete,
 }: {
   conversation: ConversationDto;
@@ -1429,6 +1745,7 @@ function ConversationRow({
   variant: "desktop" | "mobile";
   onSelect: () => void;
   onRename: () => void;
+  onPin: () => void;
   onDelete: () => void;
 }) {
   const label = formatConversationLabel(conversation);
@@ -1454,11 +1771,16 @@ function ConversationRow({
           onClick={onSelect}
           className={`min-w-0 flex-1 text-left ${textClass}`}
         >
-          <span className="line-clamp-2">{label}</span>
+          <span className="flex items-start gap-1.5">
+            {conversation.is_pinned ? <Pin className="mt-0.5 h-3 w-3 shrink-0" /> : null}
+            <span className="line-clamp-2">{label}</span>
+          </span>
         </button>
         <ConversationActions
           disabled={disabled}
           onRename={onRename}
+          onPin={onPin}
+          pinned={conversation.is_pinned}
           onDelete={onDelete}
           compact={isDesktop}
         />
@@ -1470,11 +1792,15 @@ function ConversationRow({
 function ConversationActions({
   disabled,
   onRename,
+  onPin,
+  pinned,
   onDelete,
   compact,
 }: {
   disabled: boolean;
   onRename: () => void;
+  onPin: () => void;
+  pinned: boolean;
   onDelete: () => void;
   compact: boolean;
 }) {
@@ -1487,6 +1813,19 @@ function ConversationActions({
     <div
       className={`flex shrink-0 items-center gap-0.5 ${compact ? "opacity-100 lg:opacity-0 lg:group-hover:opacity-100 lg:group-focus-within:opacity-100" : "opacity-100"}`}
     >
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={(e) => {
+          e.stopPropagation();
+          onPin();
+        }}
+        className={btnClass}
+        title={pinned ? "取消置顶" : "置顶"}
+        aria-label={pinned ? "取消置顶会话" : "置顶会话"}
+      >
+        {pinned ? <PinOff className={iconClass} /> : <Pin className={iconClass} />}
+      </button>
       <button
         type="button"
         disabled={disabled}
