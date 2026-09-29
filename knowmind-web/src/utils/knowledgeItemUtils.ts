@@ -14,7 +14,8 @@ export function isKnowledgeItemContentReadonly(item: Pick<KnowledgeItemDto, "sou
 }
 
 /** 所有条目均可删除；关联文档时由后端级联删除文档。 */
-export function canDeleteKnowledgeItem(_item: Pick<KnowledgeItemDto, "source_type">): boolean {
+export function canDeleteKnowledgeItem(item: Pick<KnowledgeItemDto, "source_type">): boolean {
+  void item;
   return true;
 }
 

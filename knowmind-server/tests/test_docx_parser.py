@@ -7,7 +7,6 @@ from pathlib import Path
 from app.ingest.docx_parser import (
     _parse_docx_xml_fallback,
     parse_docx,
-    repair_docx_file,
     strip_null_relationships,
 )
 

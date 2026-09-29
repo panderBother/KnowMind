@@ -24,7 +24,10 @@ class EvalStatsOut(BaseModel):
     total_runs: int
     question_count: int
     avg_latency_s: float
+    p95_latency_s: float = 0.0
+    avg_ttft_s: float | None = None
     pass_rate: float
+    failed_cases: int = 0
 
 
 class EvalDashboardOut(BaseModel):

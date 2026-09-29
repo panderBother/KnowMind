@@ -96,10 +96,14 @@ class Settings(BaseSettings):
     rag_bm25_top_k: int = 20
     # 兼容旧配置；未单独设 vector/bm25 时的兜底候选池
     rag_candidate_k: int = 32
-    # 入库语义切块：过短合并下限、单块上限（字符）
+    # 入库语义切块：字符参数兼容保留，token 参数控制实际语义块大小
     chunk_min_chars: int = 120
     chunk_max_chars: int = 640
     chunk_overlap: int = 100
+    # token 级切块目标；字符参数保留作兼容与硬上限
+    chunk_target_tokens: int = 360
+    chunk_max_tokens: int = 560
+    chunk_overlap_tokens: int = 64
     # 管理端搜索：向量/Rerank 语义分低于此阈值视为未命中
     rag_min_relevance_score: float = 0.45
     # 对话 RAG 更严：未达阈值则不注入上下文、不展示引用来源
@@ -140,6 +144,9 @@ class Settings(BaseSettings):
     edgefn_api_key: str | None = Field(default=None, description="Bearer Token，勿提交仓库")
     edgefn_api_base_url: str = "https://api.edgefn.net/v1"
     edgefn_chat_model: str = "DeepSeek-R1-0528-Qwen3-8B"
+    # 成本仅做估算；按实际供应商账单配置每百万 Token 单价。0 表示未知/不估价。
+    llm_input_cost_per_million_usd: float = 0.0
+    llm_output_cost_per_million_usd: float = 0.0
     # 识图专用；留空则不对 EdgeFN 发 image_url（避免纯文本对话模型 400）
     edgefn_vision_model: str | None = Field(
         default=None, description="支持 vision 的 EdgeFN 模型名，勿与 edgefn_chat_model 混用"

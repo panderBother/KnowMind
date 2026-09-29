@@ -7,6 +7,7 @@ from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.logging_setup import configure_app_logging, log_info
 from app.db.session import close_db, init_db
+from app.middleware.request_observability import RequestObservabilityMiddleware
 
 
 @asynccontextmanager
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI):
 _settings = get_settings()
 app = FastAPI(title=_settings.project_name, version="0.1.0", lifespan=lifespan)
 
+app.add_middleware(RequestObservabilityMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_settings.cors_origins,

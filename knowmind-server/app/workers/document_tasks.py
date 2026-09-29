@@ -15,6 +15,7 @@ from app.db.sync_session import session_scope
 from app.ingest.chunking import (
     TextChunk,
     chunk_settings_from_config,
+    chunk_token_settings_from_config,
     semantic_chunk_pages,
     semantic_chunk_text,
 )
@@ -201,11 +202,44 @@ def _extract_full_text(
     parsed_title: str | None,
     doc_title: str | None,
 ) -> tuple[str, list[PageText], str | None]:
-    if (parsed_content or "").strip():
+    file_type = FileType(file_type_str) if file_type_str else FileType.PDF
+
+    # 预览内容中保留了 PDF 页/Excel 工作表标记时恢复边界；否则所有内容会
+    # 被误记为 page=0，导致引用和切块上下文丢失。
+    if (parsed_content or "").strip() and file_type not in (
+        FileType.XLSX,
+        FileType.XLS,
+        FileType.CSV,
+    ):
         body = parsed_content.strip()
+        if file_type == FileType.PDF:
+            import re
+
+            matches = list(re.finditer(r"(?m)^##\s*第\s*(\d+)\s*页\s*$", body))
+            if matches:
+                pages: list[PageText] = []
+                for idx, match in enumerate(matches):
+                    start = match.end()
+                    end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
+                    page_text = body[start:end].strip()
+                    if page_text:
+                        pages.append(
+                            PageText(
+                                page_index=max(0, int(match.group(1)) - 1),
+                                text=page_text,
+                            )
+                        )
+                if pages:
+                    return body, pages, parsed_title or doc_title
         return body, [PageText(page_index=0, text=body)], parsed_title or doc_title
 
-    file_type = FileType(file_type_str) if file_type_str else FileType.PDF
+    # 表格必须从原文件读取全量行。预览字段有 MEDIUMTEXT 上限，不能作为大表的
+    # 唯一事实源；用户仍可编辑预览，但索引完整性优先于截断后的预览正文。
+    if file_type in (FileType.XLSX, FileType.XLS, FileType.CSV):
+        result = parse_file(file_path, filename, file_type)
+        pages = result.pages or [PageText(page_index=0, text=result.merged_content())]
+        return result.merged_content(), pages, result.title
+
     if file_type == FileType.PDF:
         from app.ingest.pdf import extract_pdf_pages
 
@@ -218,21 +252,43 @@ def _extract_full_text(
     return result.merged_content(), pages, result.title
 
 
-def _semantic_index_chunks(*, full_text: str, pages: list[PageText]) -> list[TextChunk]:
+def _semantic_index_chunks(
+    *,
+    full_text: str,
+    pages: list[PageText],
+    title: str | None = None,
+) -> list[TextChunk]:
     min_chars, max_chars, overlap = chunk_settings_from_config()
+    target_tokens, max_tokens, overlap_tokens = chunk_token_settings_from_config()
     if pages and len(pages) > 1:
-        return semantic_chunk_pages(
+        chunks = semantic_chunk_pages(
             pages,
             max_chars=max_chars,
             min_chars=min_chars,
             overlap=overlap,
+            target_tokens=target_tokens,
+            max_tokens=max_tokens,
+            overlap_tokens=overlap_tokens,
         )
-    return semantic_chunk_text(
-        full_text,
-        max_chars=max_chars,
-        min_chars=min_chars,
-        overlap=overlap,
-    )
+    else:
+        chunks = semantic_chunk_text(
+            full_text,
+            max_chars=max_chars,
+            min_chars=min_chars,
+            overlap=overlap,
+            target_tokens=target_tokens,
+            max_tokens=max_tokens,
+            overlap_tokens=overlap_tokens,
+        )
+
+    # 将文档标题作为检索上下文加入嵌入文本，展示正文仍保持原样可读。
+    prefix = (title or "").strip()
+    if prefix:
+        chunks = [
+            TextChunk(text=f"文档：{prefix}\n\n{chunk.text}", page=chunk.page)
+            for chunk in chunks
+        ]
+    return chunks
 
 
 def _embed_with_progress(
@@ -367,7 +423,11 @@ def process_document_once(document_id: str, revision_id: str | None = None) -> b
         _fail(document_id, revision_id, "未提取到文本内容")
         return False
 
-    index_chunks = _semantic_index_chunks(full_text=full_text, pages=pages)
+    index_chunks = _semantic_index_chunks(
+        full_text=full_text,
+        pages=pages,
+        title=parsed_title or parse_title or filename,
+    )
     _set_progress(document_id, revision_id, 42, f"语义切块 {len(index_chunks)} 段")
     assignments, removed_ids = plan_incremental_chunks(
         document_id=document_id,

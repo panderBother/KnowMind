@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.orm import Document, KnowledgeBase, KnowledgeCategory, KnowledgeItem, new_uuid
 from app.services import item_indexing
-from app.services.knowledge_category_service import KnowledgeCategoryError, ensure_default_category
+from app.services.knowledge_category_service import ensure_default_category
 from app.utils.db_text import clamp_mediumtext
 
 

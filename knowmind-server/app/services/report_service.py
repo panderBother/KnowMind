@@ -15,7 +15,7 @@ from app.services.knowledge_item_service import _ensure_kb
 from app.services.rag_context import search_kb
 from app.http_client import friendly_connect_error
 from app.services.rag_citations import hits_to_source_payload, resolve_hit_titles
-from app.services.rag_logging_service import RagHit, log_rag_retrieval
+from app.services.rag_logging_service import log_rag_retrieval
 
 log = logging.getLogger(__name__)
 

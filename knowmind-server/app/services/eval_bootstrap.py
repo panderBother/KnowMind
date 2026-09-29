@@ -30,7 +30,14 @@ def bootstrap_eval_report() -> None:
         return
     try:
         subprocess.run(
-            [sys.executable, str(pipeline), "--dataset", "sample.jsonl"],
+            [
+                sys.executable,
+                str(pipeline),
+                "--dataset",
+                "sample.jsonl",
+                "--mode",
+                "offline",
+            ],
             check=True,
             cwd=str(pipeline.parent.parent),
             capture_output=True,

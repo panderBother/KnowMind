@@ -121,7 +121,7 @@ async def upload_documents(
             )
         _validate_file_magic(data, file_type, raw_name)
 
-        md5_hex = hashlib.md5(data).hexdigest()  # noqa: S324 - legacy compatibility only
+        md5_hex = hashlib.md5(data, usedforsecurity=False).hexdigest()
         sha256_hex = sha256_bytes(data)
         dup_result = await session.execute(
             select(Document).where(

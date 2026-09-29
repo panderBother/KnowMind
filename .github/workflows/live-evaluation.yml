@@ -1,0 +1,54 @@
+name: Live RAG evaluation
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: Dataset file under knowmind-eval/datasets
+        required: true
+        default: sample.jsonl
+      fail_under:
+        description: Minimum case pass rate (0-1)
+        required: true
+        default: "0.60"
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    environment: evaluation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Validate evaluation secrets
+        env:
+          EVAL_API_BASE_URL: ${{ secrets.EVAL_API_BASE_URL }}
+          EVAL_EMAIL: ${{ secrets.EVAL_EMAIL }}
+          EVAL_PASSWORD: ${{ secrets.EVAL_PASSWORD }}
+        run: test -n "$EVAL_API_BASE_URL" && test -n "$EVAL_EMAIL" && test -n "$EVAL_PASSWORD"
+      - name: Run real chat-stream evaluation
+        env:
+          EVAL_API_BASE_URL: ${{ secrets.EVAL_API_BASE_URL }}
+          EVAL_EMAIL: ${{ secrets.EVAL_EMAIL }}
+          EVAL_PASSWORD: ${{ secrets.EVAL_PASSWORD }}
+          EVAL_KB_ID: ${{ secrets.EVAL_KB_ID }}
+          EVAL_DATASET: ${{ inputs.dataset }}
+          EVAL_FAIL_UNDER: ${{ inputs.fail_under }}
+        run: >-
+          uv run python knowmind-eval/pipelines/run_eval.py
+          --mode live
+          --dataset "$EVAL_DATASET"
+          --fail-under "$EVAL_FAIL_UNDER"
+          --reports-dir live-eval-reports
+          --version "${{ github.sha }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-evaluation-${{ github.run_id }}
+          path: live-eval-reports/*.json
+          retention-days: 30

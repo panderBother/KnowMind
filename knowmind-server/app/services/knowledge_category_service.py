@@ -60,7 +60,6 @@ async def ensure_default_category(session: AsyncSession, user_id: str, kb_id: st
 
 
 def _build_tree(rows: list[KnowledgeCategory]) -> list[dict]:
-    by_id = {c.id: c for c in rows}
     children_map: dict[str | None, list[KnowledgeCategory]] = {}
     for c in rows:
         children_map.setdefault(c.parent_id, []).append(c)

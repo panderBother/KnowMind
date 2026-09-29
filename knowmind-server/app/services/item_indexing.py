@@ -14,7 +14,12 @@ from app.indexing.whoosh_index import (
     whoosh_delete_chunks_for_doc,
     whoosh_upsert_chunks,
 )
-from app.ingest.chunking import TextChunk, chunk_settings_from_config, semantic_chunk_text
+from app.ingest.chunking import (
+    TextChunk,
+    chunk_settings_from_config,
+    chunk_token_settings_from_config,
+    semantic_chunk_text,
+)
 from app.ingest.embedding import embed_texts
 from whoosh.writing import AsyncWriter
 
@@ -201,6 +206,7 @@ def _build_rows_for_text(
     from app.models.orm import new_uuid
 
     min_chars, max_chars, overlap = chunk_settings_from_config()
+    target_tokens, max_tokens, overlap_tokens = chunk_token_settings_from_config()
     body = normalize_index_text(title, text)
     chunks: list[TextChunk] = semantic_chunk_text(
         body,
@@ -208,6 +214,9 @@ def _build_rows_for_text(
         max_chars=max_chars,
         min_chars=min_chars,
         overlap=overlap,
+        target_tokens=target_tokens,
+        max_tokens=max_tokens,
+        overlap_tokens=overlap_tokens,
     )
     if not chunks:
         chunks = [TextChunk(text=body, page=page)]

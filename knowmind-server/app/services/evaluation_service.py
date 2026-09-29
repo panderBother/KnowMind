@@ -42,7 +42,10 @@ def _empty_dashboard(*, note: str | None = None) -> EvalDashboardOut:
         total_runs=0,
         question_count=0,
         avg_latency_s=0.0,
+        p95_latency_s=0.0,
+        avg_ttft_s=None,
         pass_rate=0.0,
+        failed_cases=0,
     )
     out = EvalDashboardOut(mode="stub", kpis=kpis, stats=stats)
     if note:
@@ -89,7 +92,14 @@ def get_dashboard() -> EvalDashboardOut:
         total_runs=int(stats_raw.get("total_runs", 0)),
         question_count=int(stats_raw.get("question_count", raw.get("sample_count", 0))),
         avg_latency_s=float(stats_raw.get("avg_latency_s", 0.0)),
+        p95_latency_s=float(stats_raw.get("p95_latency_s", 0.0)),
+        avg_ttft_s=(
+            float(stats_raw["avg_ttft_s"])
+            if stats_raw.get("avg_ttft_s") is not None
+            else None
+        ),
         pass_rate=float(stats_raw.get("pass_rate", 0.0)),
+        failed_cases=int(stats_raw.get("failed_cases", 0)),
     )
 
     return EvalDashboardOut(
@@ -108,7 +118,6 @@ def get_dashboard() -> EvalDashboardOut:
 def run_sample_eval() -> EvalDashboardOut:
     import subprocess
     import sys
-    from pathlib import Path
 
     root = _repo_root()
     pipeline = root / "knowmind-eval" / "pipelines" / "run_eval.py"
@@ -116,7 +125,14 @@ def run_sample_eval() -> EvalDashboardOut:
         return _empty_dashboard(note="pipeline_missing")
     try:
         subprocess.run(
-            [sys.executable, str(pipeline), "--dataset", "sample.jsonl"],
+            [
+                sys.executable,
+                str(pipeline),
+                "--dataset",
+                "sample.jsonl",
+                "--mode",
+                "offline",
+            ],
             check=True,
             cwd=str(pipeline.parent.parent),
             capture_output=True,
@@ -124,12 +140,5 @@ def run_sample_eval() -> EvalDashboardOut:
             timeout=300,
         )
     except Exception:
-        subprocess.run(
-            [sys.executable, str(pipeline), "--dataset", "sample.jsonl", "--simple-only"],
-            check=True,
-            cwd=str(pipeline.parent.parent),
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        return _empty_dashboard(note="evaluation_failed")
     return get_dashboard()

@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,22 @@ export default defineConfig({
       "/api": {
         target: "http://127.0.0.1:8000",
         changeOrigin: true,
+      },
+    },
+  },
+  test: {
+    environment: "jsdom",
+    exclude: ["e2e/**", "node_modules/**", "dist/**"],
+    setupFiles: ["./src/test/setup.ts"],
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json-summary"],
+      include: ["src/services/auth.ts", "src/services/http.ts", "src/services/chat.ts"],
+      thresholds: {
+        lines: 35,
+        functions: 35,
+        statements: 35,
+        branches: 25,
       },
     },
   },

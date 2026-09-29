@@ -10,3 +10,4 @@ import os
 os.environ.pop("DATABASE_URL", None)
 # pytest 默认不拉取 BGE-M3，避免下载大模型；Worker 集成测试可显式改为 bge
 os.environ.setdefault("EMBEDDING_MODE", "hash")
+os.environ["INGEST_BACKGROUND_THREAD"] = "false"

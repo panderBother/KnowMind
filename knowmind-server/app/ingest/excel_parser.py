@@ -62,6 +62,20 @@ def _sheet_to_markdown(sheet_name: str, rows: list[list[str]]) -> str:
     if len(normalized) > 11:
         lines.append(f"\n*（共 {len(normalized)} 行，仅展示前 10 行数据）*")
 
+        # 预览之外保留全量记录。每行重复字段名，避免脱离表头后无法独立检索；
+        # 同时比 Markdown 大表更紧凑，便于后续按行范围切块。
+        lines.extend(["", "### 全量记录", ""])
+        for row_number, row in enumerate(data_rows[10:], start=12):
+            pairs = []
+            for ci, value in enumerate(row):
+                value = value.strip()
+                if not value:
+                    continue
+                header = headers[ci].strip() if ci < len(headers) else ""
+                pairs.append(f"{header or f'列{ci + 1}'}={value}")
+            if pairs:
+                lines.append(f"- 行 {row_number}：" + "；".join(pairs))
+
     return "\n".join(lines)
 
 

@@ -16,6 +16,7 @@ import {
 
 import { getAccessToken } from "@/services/auth";
 import { fetchEvalDashboard, runEvalPipeline, type EvalDashboardDto } from "@/services/evaluation";
+import { fetchUsageSummary, type UsageSummaryDto } from "@/services/observability";
 
 const KPI_META = [
   { key: "faithfulness", title: "忠实度", sub: "Faithfulness" },
@@ -33,6 +34,7 @@ export function EvalDashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [data, setData] = useState<EvalDashboardDto | null>(null);
+  const [usage, setUsage] = useState<UsageSummaryDto | null>(null);
 
   const handleRunEval = async () => {
     setRunning(true);
@@ -54,7 +56,12 @@ export function EvalDashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      setData(await fetchEvalDashboard());
+      const [evaluation, usageSummary] = await Promise.all([
+        fetchEvalDashboard(),
+        fetchUsageSummary(7),
+      ]);
+      setData(evaluation);
+      setUsage(usageSummary);
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败");
     } finally {
@@ -95,11 +102,11 @@ export function EvalDashboardPage() {
     <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 pb-6 lg:space-y-6 lg:p-8">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between lg:items-end">
         <div>
-          <h1 className="text-lg font-semibold text-slate-900 lg:text-xl">RAG 评估看板</h1>
+          <h1 className="text-lg font-semibold text-slate-900 lg:text-xl">质量与成本</h1>
           <p className="mt-0.5 text-xs text-slate-500 lg:text-sm">
             {isStub
               ? "暂无评估报告，请运行 knowmind-eval 流水线"
-              : `RAGAS 指标 · ${data.mode} · ${data.sample_count} 样本`}
+              : `${data.mode.includes("ragas") ? "RAGAS 评估" : "词面重叠指标（非语义正确率）"} · ${data.mode} · ${data.sample_count} 样本`}
           </p>
         </div>
         {data?.created_at ? (
@@ -111,7 +118,7 @@ export function EvalDashboardPage() {
           onClick={() => void handleRunEval()}
           className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:border-primary/40 disabled:opacity-50"
         >
-          {running ? "评估运行中…" : "运行 sample 评估"}
+          {running ? "评估运行中…" : "运行离线样例回归"}
         </button>
       </div>
 
@@ -145,6 +152,23 @@ export function EvalDashboardPage() {
             })}
           </section>
 
+          <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-card lg:rounded-xl">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-900">近 7 天模型用量</h2>
+                <p className="mt-0.5 text-xs text-slate-500">按对话生成估算 Token 与成本，不含规划、嵌入及工具循环的全部用量；以供应商账单为准</p>
+              </div>
+              <span className="text-xs text-slate-400">{usage?.calls ?? 0} 次调用</span>
+            </div>
+            <dl className="mt-4 grid grid-cols-2 gap-4 text-sm lg:grid-cols-5">
+              <UsageStat label="总 Token" value={(usage?.total_tokens ?? 0).toLocaleString()} />
+              <UsageStat label="估算成本" value={usage?.pricing_configured ? `$${usage.estimated_cost_usd.toFixed(4)}` : "未配置单价"} />
+              <UsageStat label="平均延迟" value={`${usage?.avg_latency_ms ?? 0} ms`} />
+              <UsageStat label="P95 延迟" value={`${usage?.p95_latency_ms ?? 0} ms`} />
+              <UsageStat label="失败 / 停止" value={`${usage?.failed ?? 0} / ${usage?.stopped ?? 0}`} />
+            </dl>
+          </section>
+
           <section className="rounded-2xl border border-slate-200 bg-white p-3 shadow-card lg:rounded-xl lg:p-4">
             <h2 className="text-xs font-semibold text-slate-900 lg:text-sm">指标趋势</h2>
             <div className="mt-3 h-56 lg:mt-4 lg:h-72">
@@ -153,7 +177,7 @@ export function EvalDashboardPage() {
                   <LineChart data={trendData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
                     <XAxis dataKey="t" tick={{ fontSize: 11 }} />
-                    <YAxis domain={[60, 100]} tick={{ fontSize: 11 }} />
+                    <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} />
                     <Tooltip />
                     <Legend />
                     <Line type="monotone" dataKey="faith" name="忠实度" stroke="#0066FF" strokeWidth={2} dot={false} />
@@ -187,6 +211,12 @@ export function EvalDashboardPage() {
                   <dd className="text-lg font-semibold text-slate-900">{data?.stats.avg_latency_s ?? 0}s</dd>
                 </div>
                 <div>
+                  <dt className="text-xs text-slate-500">P95 / 首 Token</dt>
+                  <dd className="text-lg font-semibold text-slate-900">
+                    {data?.stats.p95_latency_s ?? 0}s / {data?.stats.avg_ttft_s ?? "—"}s
+                  </dd>
+                </div>
+                <div>
                   <dt className="text-xs text-slate-500">通过率</dt>
                   <dd className="text-lg font-semibold text-slate-900">
                     {((data?.stats.pass_rate ?? 0) * 100).toFixed(1)}%
@@ -205,7 +235,7 @@ export function EvalDashboardPage() {
                     <BarChart data={versionData}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
                       <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                      <YAxis domain={[60, 100]} tick={{ fontSize: 10 }} />
+                      <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} />
                       <Tooltip />
                       <Legend />
                       <Bar dataKey="v21" name={versionLabel} fill="#0066FF" radius={[4, 4, 0, 0]} />
@@ -220,6 +250,15 @@ export function EvalDashboardPage() {
           </section>
         </>
       ) : null}
+    </div>
+  );
+}
+
+function UsageStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-xs text-slate-500">{label}</dt>
+      <dd className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{value}</dd>
     </div>
   );
 }

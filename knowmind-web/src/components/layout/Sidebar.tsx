@@ -4,6 +4,7 @@ import {
   Bot,
   FileText,
   LayoutDashboard,
+  Activity,
   LogOut,
   MessageSquare,
   Settings,
@@ -27,6 +28,7 @@ const NAV = [
   { to: "/reports", label: "报告", icon: LayoutDashboard },
   { to: "/experts", label: "专家", icon: Bot },
   { to: "/tools", label: "工具", icon: Wrench },
+  { to: "/quality", label: "质量系统", icon: Activity },
   { to: "/settings", label: "设置", icon: Settings },
 ] as const;
 

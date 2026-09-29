@@ -91,6 +91,8 @@ flowchart LR
 | [`docs/`](docs/) | 工程文档 |
 | [`assets/`](assets/) | README 界面截图 |
 
+质量系统的本地检查、真实评测凭据、观测口径和 CI 合并门禁见 [`docs/quality-system.md`](docs/quality-system.md)。
+
 ---
 
 ## 已实现功能

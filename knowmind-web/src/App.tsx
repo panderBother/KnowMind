@@ -4,6 +4,7 @@ import { ChatPage } from "@/pages/ChatPage";
 import { DocumentsPage } from "@/pages/DocumentsPage";
 import { KnowledgeItemDetailPage } from "@/pages/KnowledgeItemDetailPage";
 import { ExpertChatPage } from "@/pages/ExpertChatPage";
+import { EvalDashboardPage } from "@/pages/EvalDashboardPage";
 import { ExpertsPage } from "@/pages/ExpertsPage";
 import { KnowledgeProductionPage } from "@/pages/KnowledgeProductionPage";
 import { KnowledgeAnalyticsPage } from "@/pages/KnowledgeAnalyticsPage";
@@ -47,6 +48,7 @@ export default function App() {
             <Route path="/experts" element={<ExpertsPage />} />
             <Route path="/experts/:expertId" element={<ExpertChatPage />} />
             <Route path="/tools" element={<ToolsPage />} />
+            <Route path="/quality" element={<EvalDashboardPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Route>

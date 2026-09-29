@@ -36,7 +36,10 @@ export type EvalDashboardDto = {
     total_runs: number;
     question_count: number;
     avg_latency_s: number;
+    p95_latency_s: number;
+    avg_ttft_s: number | null;
     pass_rate: number;
+    failed_cases: number;
   };
 };
 

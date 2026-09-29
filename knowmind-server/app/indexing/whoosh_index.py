@@ -8,10 +8,16 @@ from typing import Any
 from whoosh import index as whoosh_index
 from whoosh import qparser
 from whoosh import query as wq
+from whoosh.analysis import LowercaseFilter, RegexTokenizer
 from whoosh.fields import ID, Schema, TEXT
 from whoosh.writing import AsyncWriter
 
 log = logging.getLogger(__name__)
+
+# 中文按单字、英文/数字按词建立索引。Whoosh 默认 StandardAnalyzer 对中文长句
+# 切分不稳定，导致实体名和短关键词很难命中。
+_CONTENT_ANALYZER = RegexTokenizer(expression=r"[A-Za-z0-9_]+|[\u3400-\u9fff]") | LowercaseFilter()
+_INDEX_VERSION = "main_v2_zh"
 
 _schema = Schema(
     chunk_id=ID(stored=True, unique=True),
@@ -22,20 +28,24 @@ _schema = Schema(
     item_id=ID(stored=True),
     lifecycle_status=ID(stored=True),
     page=TEXT(stored=True),
-    content=TEXT(stored=True),
+    content=TEXT(stored=True, analyzer=_CONTENT_ANALYZER),
 )
 
 _REQUIRED_FIELDS = frozenset(_schema.names())
 
 
 def _dir(root: str | Path) -> str:
-    d = Path(root) / "main"
+    # 中文分析器升级使用新目录，保留旧索引，避免服务启动时删除大型索引文件。
+    d = Path(root) / _INDEX_VERSION
     d.mkdir(parents=True, exist_ok=True)
     return str(d.resolve())
 
 
 def _schema_matches(ix: whoosh_index.FileIndex) -> bool:
-    return frozenset(ix.schema.names()) == _REQUIRED_FIELDS
+    if frozenset(ix.schema.names()) != _REQUIRED_FIELDS:
+        return False
+    # analyzer 变更时主动重建索引，避免继续使用旧的默认英文分词。
+    return repr(ix.schema["content"].analyzer) == repr(_CONTENT_ANALYZER)
 
 
 def _recreate_index(root: str | Path) -> whoosh_index.FileIndex:
@@ -134,6 +144,60 @@ def whoosh_list_chunk_ids_for_doc(root: str | Path, doc_id: str) -> list[str]:
         ]
 
 
+def _search_index(
+    ix: whoosh_index.FileIndex,
+    *,
+    kb_id: str,
+    query: str,
+    top_k: int,
+    lifecycle_status: str,
+) -> list[dict[str, Any]]:
+    parser = qparser.QueryParser("content", schema=ix.schema)
+    try:
+        text_q = parser.parse(query)
+    except Exception as e:
+        log.warning("whoosh parse query failed: %s", e)
+        return []
+
+    filter_q = wq.And(
+        [
+            wq.Term("kb_id", kb_id),
+            wq.Term("lifecycle_status", lifecycle_status),
+        ],
+    )
+    final_q = wq.And([text_q, filter_q])
+    out: list[dict[str, Any]] = []
+    try:
+        with ix.searcher() as searcher:
+            hits = searcher.search(final_q, limit=top_k)
+            if not hits:
+                return []
+            max_score = float(hits[0].score or 1.0) or 1.0
+            for hit in hits:
+                raw_score = float(hit.score or 0.0)
+                page_raw = hit.get("page") or "0"
+                try:
+                    page = int(page_raw)
+                except (TypeError, ValueError):
+                    page = 0
+                out.append(
+                    {
+                        "chunk_id": str(hit.get("chunk_id") or ""),
+                        "text": str(hit.get("content") or ""),
+                        "doc_id": str(hit.get("doc_id") or ""),
+                        "revision_id": str(hit.get("revision_id") or ""),
+                        "item_id": str(hit.get("item_id") or ""),
+                        "page": page,
+                        "score": max(0.0, min(1.0, raw_score / max_score)),
+                        "bm25_score": raw_score,
+                    },
+                )
+    except Exception as e:
+        log.warning("whoosh search failed: %s", e)
+        return []
+    return out
+
+
 def whoosh_search(
     root: str | Path,
     *,
@@ -149,51 +213,38 @@ def whoosh_search(
 
     k = max(1, min(int(top_k), 64))
     ix = open_or_create_index(root)
-    parser = qparser.QueryParser("content", schema=ix.schema)
-    try:
-        text_q = parser.parse(qtext)
-    except Exception as e:
-        log.warning("whoosh parse query failed: %s", e)
-        return []
-
-    filter_q = wq.And(
-        [
-            wq.Term("kb_id", kb_id),
-            wq.Term("lifecycle_status", lifecycle_status),
-        ],
+    out = _search_index(
+        ix,
+        kb_id=kb_id,
+        query=qtext,
+        top_k=k,
+        lifecycle_status=lifecycle_status,
     )
-    final_q = wq.And([text_q, filter_q])
 
-    out: list[dict[str, Any]] = []
-    try:
-        with ix.searcher() as searcher:
-            hits = searcher.search(final_q, limit=k)
-            if not hits:
-                return []
-            max_score = float(hits[0].score or 1.0) or 1.0
-            for hit in hits:
-                raw_score = float(hit.score or 0.0)
-                norm = raw_score / max_score if max_score > 0 else 0.0
-                page_raw = hit.get("page") or "0"
-                try:
-                    page = int(page_raw)
-                except (TypeError, ValueError):
-                    page = 0
-                out.append(
-                    {
-                        "chunk_id": str(hit.get("chunk_id") or ""),
-                        "text": str(hit.get("content") or ""),
-                        "doc_id": str(hit.get("doc_id") or ""),
-                        "revision_id": str(hit.get("revision_id") or ""),
-                        "item_id": str(hit.get("item_id") or ""),
-                        "page": page,
-                        "score": max(0.0, min(1.0, norm)),
-                        "bm25_score": raw_score,
-                    },
-                )
-    except Exception as e:
-        log.warning("whoosh search failed: %s", e)
-        return []
+    # 中文分析器升级期间，旧 main 索引仍保留。合并旧索引结果，避免已有文档
+    # 在完成重建前暂时失去 BM25 召回；同一 chunk 以新索引结果为准。
+    legacy_path = Path(root) / "main"
+    current_path = Path(_dir(root))
+    if legacy_path.resolve() != current_path.resolve() and whoosh_index.exists_in(str(legacy_path)):
+        try:
+            legacy_ix = whoosh_index.open_dir(str(legacy_path))
+            legacy_hits = _search_index(
+                legacy_ix,
+                kb_id=kb_id,
+                query=qtext,
+                top_k=k,
+                lifecycle_status=lifecycle_status,
+            )
+            by_id = {str(row.get("chunk_id") or ""): row for row in out}
+            for row in legacy_hits:
+                cid = str(row.get("chunk_id") or "")
+                if cid and cid not in by_id:
+                    out.append(row)
+            out.sort(key=lambda row: float(row.get("score") or 0.0), reverse=True)
+            out = out[:k]
+            legacy_ix.close()
+        except Exception as e:
+            log.warning("legacy whoosh search failed: %s", e)
 
     log.info("whoosh search kb=%s hits=%s", kb_id, len(out))
     return out

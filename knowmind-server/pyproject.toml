@@ -5,6 +5,7 @@ description = "KnowMind FastAPI 网关：鉴权、任务编排、与 Agent / MCP
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "defusedxml>=0.7.1",
   "fastapi>=0.115.0",
   "uvicorn[standard]>=0.32.0",
   "pydantic-settings>=2.6.0",

@@ -14,3 +14,6 @@ _prd.zip
 knowmind-server/data/
 # 本地下载的嵌入模型（如 hf download 拉到 models/）
 knowmind-server/models/
+knowmind-web/coverage/
+knowmind-web/playwright-report/
+knowmind-web/test-results/

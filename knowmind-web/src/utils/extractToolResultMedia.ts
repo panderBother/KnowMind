@@ -8,7 +8,7 @@ const VIDEO_EXT = /\.(?:mp4|webm|mov|mkv|avi|m3u8|ogv)(?:$|[?#])/i;
 
 const MARKDOWN_LINK = /\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/g;
 const MARKDOWN_IMAGE = /!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/g;
-const BARE_URL = /https?:\/\/[^\s<>"\]\)]+/g;
+const BARE_URL = /https?:\/\/[^\s<>"\])]+/g;
 
 const MEDIA_FIELD_KEYS = new Set([
   "url",

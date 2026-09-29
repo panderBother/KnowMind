@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -52,6 +53,7 @@ from app.services.memory_prompt import (
     history_pairs_from_messages,
     retrieval_query_text,
 )
+from app.services.observability_service import add_usage_event, estimate_prompt_tokens
 from app.services.llm_planner import (
     apply_plan_to_request,
     build_llm_execution_plan,
@@ -1213,10 +1215,13 @@ async def iter_chat_stream(
     await session.refresh(asst_row)
     yield _sse_event({"type": "message_saved", "message_id": asst_row.id})
 
+    generation_started = time.perf_counter()
+    input_token_est = estimate_prompt_tokens(messages)
     assistant_body_parts: list[str] = []
     persisted_tool_traces: list[dict] = []
     stream_ok = False
     failure_message = ""
+    failure_type: str | None = None
     try:
         if _want_file_tools(req, user_id):
             yield _sse_event(
@@ -1310,6 +1315,7 @@ async def iter_chat_stream(
             yield _sse_event(_agent_step_sse("llm_generate", status="done", detail="正文输出完成"))
     except RuntimeError as e:
         failure_message = str(e)
+        failure_type = type(e).__name__
         yield _sse_event({"type": "error", "message": str(e)})
         yield _sse_event(_agent_step_sse("error", status="error", detail=str(e)))
     except asyncio.CancelledError:
@@ -1318,11 +1324,26 @@ async def iter_chat_stream(
         asst_row.generation_status = "stopped"
         asst_row.citations_json = rag_sources_payload or None
         asst_row.tool_traces_json = persisted_tool_traces or None
+        add_usage_event(
+            session,
+            user_id=user_id,
+            conversation_id=conv.id,
+            message_id=asst_row.id,
+            trace_id=trace_id,
+            model_mode=req.model_mode,
+            status="stopped",
+            input_tokens=input_token_est,
+            output_tokens=asst_row.token_est,
+            latency_ms=round((time.perf_counter() - generation_started) * 1000),
+            tool_call_count=len(persisted_tool_traces),
+            error_type="CancelledError",
+        )
         await session.commit()
         raise
     except Exception as e:  # noqa: BLE001
         msg = f"对话上游异常：{e!s}"
         failure_message = msg
+        failure_type = type(e).__name__
         yield _sse_event({"type": "error", "message": msg})
         yield _sse_event(_agent_step_sse("error", status="error", detail=msg))
 
@@ -1342,6 +1363,19 @@ async def iter_chat_stream(
                 int(conv_ref.acc_tokens_since_summary or 0) + ut + at
             )
             conv_ref.updated_at = datetime.now(timezone.utc)
+        add_usage_event(
+            session,
+            user_id=user_id,
+            conversation_id=conv.id,
+            message_id=asst_row.id,
+            trace_id=trace_id,
+            model_mode=req.model_mode,
+            status="completed",
+            input_tokens=input_token_est,
+            output_tokens=asst_row.token_est,
+            latency_ms=round((time.perf_counter() - generation_started) * 1000),
+            tool_call_count=len(persisted_tool_traces),
+        )
         await session.commit()
         await session.refresh(asst_row)
 
@@ -1362,6 +1396,20 @@ async def iter_chat_stream(
         asst_row.generation_status = "failed"
         asst_row.citations_json = rag_sources_payload or None
         asst_row.tool_traces_json = persisted_tool_traces or None
+        add_usage_event(
+            session,
+            user_id=user_id,
+            conversation_id=conv.id,
+            message_id=asst_row.id,
+            trace_id=trace_id,
+            model_mode=req.model_mode,
+            status="failed",
+            input_tokens=input_token_est,
+            output_tokens=approx_token_count(partial),
+            latency_ms=round((time.perf_counter() - generation_started) * 1000),
+            tool_call_count=len(persisted_tool_traces),
+            error_type=failure_type,
+        )
         await session.commit()
 
     if req.knowledge_base_id and rag_hits:

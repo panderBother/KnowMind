@@ -6,7 +6,7 @@ import re
 
 from app.core.config import get_settings
 
-PIPELINE_SCHEMA_VERSION = "document-pipeline-v2"
+PIPELINE_SCHEMA_VERSION = "document-pipeline-v3-structured-chunks"
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -61,6 +61,9 @@ def pipeline_fingerprint() -> str:
             "min": s.chunk_min_chars,
             "max": s.chunk_max_chars,
             "overlap": s.chunk_overlap,
+            "target_tokens": s.chunk_target_tokens,
+            "max_tokens": s.chunk_max_tokens,
+            "overlap_tokens": s.chunk_overlap_tokens,
         },
         "embedding": {
             "mode": s.embedding_mode,

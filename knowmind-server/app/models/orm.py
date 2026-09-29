@@ -432,6 +432,46 @@ class ChatMessage(Base):
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
 
 
+class AiUsageEvent(Base):
+    """一次对话生成的估算账本；不包含规划、嵌入及工具循环的全部上游用量。"""
+
+    __tablename__ = "ai_usage_events"
+    __table_args__ = (
+        Index("ix_ai_usage_user_created", "user_id", "created_at"),
+        Index("ix_ai_usage_trace", "trace_id"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    conversation_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
+    )
+    message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    trace_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    provider: Mapped[str] = mapped_column(String(40), nullable=False, default="edgefn")
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    model_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="balanced")
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer(), nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer(), nullable=False, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer(), nullable=False, default=0)
+    estimated_cost_microusd: Mapped[int] = mapped_column(
+        BigInteger(), nullable=False, default=0, server_default="0"
+    )
+    latency_ms: Mapped[int] = mapped_column(Integer(), nullable=False, default=0)
+    tool_call_count: Mapped[int] = mapped_column(Integer(), nullable=False, default=0)
+    error_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class ConversationSummary(Base):
     __tablename__ = "conversation_summaries"
 

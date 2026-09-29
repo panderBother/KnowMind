@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 _ENV_ALLOWED_ROOTS = "FILE_WRITER_ALLOWED_ROOTS"
@@ -25,7 +26,7 @@ def _default_allowed_roots() -> list[Path]:
             if drive.exists():
                 roots.append(drive.resolve())
     else:
-        tmp = Path("/tmp/knowmind").resolve()
+        tmp = (Path(tempfile.gettempdir()) / "knowmind").resolve()
         tmp.mkdir(parents=True, exist_ok=True)
         roots.append(tmp)
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-import pytest
 
 from app.ingest.registry import detect_file_type, parse_file, requires_preview
 from app.ingest.types import FileType

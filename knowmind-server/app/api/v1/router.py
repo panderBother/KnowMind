@@ -16,6 +16,7 @@ from app.api.v1.endpoints import (
     knowledge_categories,
     knowledge_items,
     mcp_tools,
+    observability,
     reports,
     workspace_files,
 )
@@ -42,3 +43,4 @@ api_router.include_router(
 )
 api_router.include_router(mcp_tools.router, prefix="/mcp/tools", tags=["mcp-tools"])
 api_router.include_router(evaluation.router, prefix="/evaluation", tags=["evaluation"])
+api_router.include_router(observability.router, prefix="/observability", tags=["observability"])

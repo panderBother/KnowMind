@@ -105,8 +105,9 @@ export function LoginPage() {
                 </p>
               ) : null}
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">邮箱</label>
+                <label htmlFor="login-email" className="mb-1 block text-xs font-medium text-slate-600">邮箱</label>
                 <input
+                  id="login-email"
                   type="email"
                   required
                   value={email}
@@ -117,9 +118,10 @@ export function LoginPage() {
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">密码</label>
+                <label htmlFor="login-password" className="mb-1 block text-xs font-medium text-slate-600">密码</label>
                 <div className="relative">
                   <input
+                    id="login-password"
                     type={showPw ? "text" : "password"}
                     required
                     value={password}

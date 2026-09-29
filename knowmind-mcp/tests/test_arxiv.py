@@ -1,4 +1,3 @@
-import pytest
 
 from arxiv.operations import extract_arxiv_ids, format_arxiv_markdown
 

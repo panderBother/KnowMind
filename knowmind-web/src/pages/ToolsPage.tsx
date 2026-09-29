@@ -475,8 +475,6 @@ export function ToolsPage() {
       setCustom(data.custom);
       setEditingTool(null);
       setImportNotice("外部 MCP 配置已更新");
-    } catch (e) {
-      throw e;
     } finally {
       setSavingEdit(false);
     }
